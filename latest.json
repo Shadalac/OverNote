@@ -1,0 +1,11 @@
+{
+  "version": "0.1.1",
+  "notes": "Testing the auto-update pipeline.",
+  "pub_date": "2026-10-03T05:51:27Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSOXJ2K2h5VVlYRDBQUnErTlcxQys5bTV4QzZMS2o3U1I0cy9GQk9VL1dXcGY1MUxxeitOcS9CblgwRWNxZUFiRzA2VnFRNFVCb1Z4ejBCM0lFS0dxdEZ2TjZKT3k3RkFRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMDA2NjQ5CWZpbGU6T3Zlck5vdGVfMC4xLjFfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuMS4xCkRLdHFYY25zR0pUaENqelk3RXV1K0JvU3lyWVhBKzZEa2w2ajZnU3k5M1J6M2pXL1kzUU0wNWd6MVA2WFliN0o5akN2WjVaKzNqK3IwZjZNa0FwTkJRPT0K",
+      "url": "https://github.com/Shadalac/OverNote/releases/download/v0.1.1/OverNote_0.1.1_x64-setup.exe"
+    }
+  }
+}

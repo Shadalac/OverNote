@@ -1,5 +1,9 @@
 <script>
   import { tick } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
+  import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import { invoke } from "@tauri-apps/api/core";
   import findIcon from "../assets/icons/find.png";
   import checklistIcon from "../assets/icons/checklist.png";
   import {
@@ -109,12 +113,68 @@
     )
   );
 
+  // ---- About: app version + a manual "check now" (the app also checks
+  // quietly on its own at launch — see App.svelte) -------------------------
+  let appVersion = $state(""); // fetched once, lazily, the first time Settings opens
+  let aboutCheckStatus = $state(null); // null | "checking" | "current" | "available" | "error"
+  let aboutUpdateVersion = $state(null);
+
+  async function checkForUpdateFromAbout() {
+    aboutCheckStatus = "checking";
+    try {
+      const update = await checkForUpdate();
+      if (update?.available) {
+        aboutCheckStatus = "available";
+        aboutUpdateVersion = update.version;
+      } else {
+        aboutCheckStatus = "current";
+      }
+    } catch {
+      aboutCheckStatus = "error";
+    }
+  }
+
+  // "Download a backup of your notes" — the whole database (every note,
+  // tag, and template) is a single sqlite file, so backing it up is just
+  // copying that one file to wherever the user picks in a save dialog.
+  let backupStatus = $state(null); // null | "saving" | "done" | "cancelled" | "error"
+
+  async function backupNotes() {
+    backupStatus = "saving";
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const dest = await saveDialog({
+        defaultPath: `OverNote-backup-${stamp}.db`,
+        filters: [{ name: "OverNote backup", extensions: ["db"] }],
+      });
+      if (!dest) {
+        backupStatus = null;
+        return;
+      }
+      await invoke("backup_notes_db", { dest });
+      backupStatus = "done";
+    } catch {
+      backupStatus = "error";
+    }
+    setTimeout(() => {
+      backupStatus = null;
+    }, 3000);
+  }
+
   function openSettings() {
     pendingTheme = committedTheme;
     pendingScale = committedScale;
     editingTag = null;
     editingTemplateId = null;
     settingsOpen = true;
+    if (!appVersion) {
+      getVersion()
+        .then((v) => (appVersion = v))
+        .catch(() => {
+          // Shouldn't happen inside Tauri, but the About section just omits
+          // the version line rather than breaking Settings over it.
+        });
+    }
   }
 
   function selectPendingTheme(theme) {
@@ -301,8 +361,9 @@
   //     checkbox can never end up mid-sentence or get knocked out of place.
   // The DOM is built once when the note loads and is the source of truth
   // while editing; it's read back into plain text only when saving.
-  let activeBlock = null; // last-focused block (text-block or checklist-block)
+  let activeBlock = null; // last-focused block (text-block, checklist-block, or bullet-list-block)
   let activeItem = null; // last-focused checklist row, if activeBlock is one
+  let activeBulletItem = null; // last-focused bullet row, if activeBlock is one
   // Last-known caret position inside a text-block, kept live via a
   // `selectionchange` listener (see initBody) so the toolbar's checklist
   // button can insert a new group exactly where the cursor is, even though
@@ -597,6 +658,8 @@
     if (!first) return;
     if (first.classList.contains("checklist-block")) {
       focusChecklistItem(first.querySelector(".check-item"), 0);
+    } else if (first.classList.contains("bullet-list-block")) {
+      focusBulletItem(first.querySelector(".bullet-item"), 0);
     } else {
       focusTextBlock(first, false);
     }
@@ -723,6 +786,54 @@
     return block;
   }
 
+  // How deep a sub-bullet can nest (Tab stops indenting past this).
+  const MAX_BULLET_LEVEL = 5;
+  const BULLET_GLYPHS = ["•", "◦", "▪"];
+
+  // Updates a bullet row's indent level: its stored data attribute, the
+  // glyph shown (cycling through BULLET_GLYPHS by depth), and the visual
+  // indent itself.
+  function applyBulletLevel(row, level) {
+    const clamped = Math.max(0, Math.min(level, MAX_BULLET_LEVEL));
+    row.dataset.level = clamped;
+    row.style.paddingLeft = `${clamped * 22}px`;
+    const marker = row.querySelector(".bullet-marker");
+    if (marker) marker.textContent = BULLET_GLYPHS[clamped % BULLET_GLYPHS.length];
+    return clamped;
+  }
+
+  function makeBulletItem(text, level = 0) {
+    const row = document.createElement("div");
+    row.className = "bullet-item";
+
+    const marker = document.createElement("span");
+    marker.className = "bullet-marker";
+    marker.setAttribute("aria-hidden", "true");
+
+    const ta = document.createElement("textarea");
+    ta.className = "line-text bullet-text";
+    ta.rows = 1;
+    ta.value = text;
+    // Same one-click "select all, just start typing" behavior as the title.
+    ta.addEventListener("focus", () => ta.select());
+
+    row.appendChild(marker);
+    row.appendChild(ta);
+    applyBulletLevel(row, level);
+    return row;
+  }
+
+  function makeBulletListBlock(items) {
+    const block = document.createElement("div");
+    block.className = "block bullet-list-block";
+    for (const it of items) {
+      const text = typeof it === "string" ? it : it.text;
+      const level = typeof it === "string" ? 0 : it.level || 0;
+      block.appendChild(makeBulletItem(text, level));
+    }
+    return block;
+  }
+
   // Populates the body from the note's saved text, grouping consecutive
   // "- [ ] "/"- [x] " lines into one checklist block and everything else
   // into text blocks. Runs once, when this NoteEditor instance is created
@@ -733,6 +844,7 @@
     const rawLines = note.body.length ? note.body.split("\n") : [""];
     let textLines = [];
     let checkItems = [];
+    let bulletItems = [];
     let pendingTitle = "";
     let pendingIds = [];
 
@@ -754,14 +866,24 @@
       pendingTitle = "";
       pendingIds = [];
     };
+    const flushBulletList = () => {
+      if (bulletItems.length === 0) return;
+      node.appendChild(makeBulletListBlock(bulletItems));
+      bulletItems = [];
+    };
 
     for (const raw of rawLines) {
       const titleMatch = /^-# (.*)$/.exec(raw);
       const idsMatch = /^-@ID (.*)$/.exec(raw);
       const match = /^- \[( |x)\] (.*)$/.exec(raw);
+      // Bullets are saved as "\t"-indented "- text" lines — tested after
+      // the checklist regex above so a "- [ ] "/"- [x] " line is always
+      // claimed by the checklist first, never misread as a plain bullet.
+      const bulletMatch = /^(\t*)- (.*)$/.exec(raw);
       if (titleMatch) {
         // A group title line always starts a fresh checklist group.
         flushText();
+        flushBulletList();
         flushChecklist();
         pendingTitle = titleMatch[1];
       } else if (idsMatch) {
@@ -773,14 +895,21 @@
         pendingIds = idsMatch[1].split(",").filter(Boolean);
       } else if (match) {
         flushText();
+        flushBulletList();
         checkItems.push({ text: match[2], checked: match[1] === "x" });
+      } else if (bulletMatch) {
+        flushText();
+        flushChecklist();
+        bulletItems.push({ text: bulletMatch[2], level: bulletMatch[1].length });
       } else {
         flushChecklist();
+        flushBulletList();
         textLines.push(raw);
       }
     }
     flushText();
     flushChecklist();
+    flushBulletList();
 
     if (node.children.length === 0) {
       node.appendChild(makeTextBlock(""));
@@ -839,6 +968,13 @@
           const ta = row.querySelector(".line-text");
           out.push(`- [${cb.checked ? "x" : " "}] ${ta.value}`);
         });
+      } else if (block.classList.contains("bullet-list-block")) {
+        const rows = Array.from(block.querySelectorAll(".bullet-item"));
+        rows.forEach((row) => {
+          const level = parseInt(row.dataset.level || "0", 10);
+          const ta = row.querySelector(".line-text");
+          out.push("\t".repeat(level) + "- " + ta.value);
+        });
       } else {
         out.push(block.innerText.replace(/\n$/, ""));
       }
@@ -852,6 +988,8 @@
       if (block.classList.contains("checklist-block")) {
         if (block.querySelectorAll(".check-item").length > 0) return false;
         if (block.querySelector(".checklist-title")?.value.trim()) return false;
+      } else if (block.classList.contains("bullet-list-block")) {
+        if (block.querySelectorAll(".bullet-item").length > 0) return false;
       } else if (block.textContent.trim() !== "") {
         return false;
       }
@@ -885,6 +1023,14 @@
     ta.setSelectionRange(p, p);
   }
 
+  function focusBulletItem(row, pos) {
+    if (!row) return;
+    const ta = row.querySelector(".line-text");
+    ta.focus();
+    const p = pos ?? ta.value.length;
+    ta.setSelectionRange(p, p);
+  }
+
   function focusTextBlock(tb, atEnd) {
     if (!tb) return;
     tb.focus();
@@ -894,6 +1040,35 @@
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
+  }
+
+  // Focuses the very start/end of *any* block, whatever type it is — used
+  // for arrowing out of a bullet list (or checklist) into whatever sits
+  // next to it, since each block type otherwise needs its own way in.
+  function focusBlockStart(block) {
+    if (!block) return;
+    if (block.classList.contains("checklist-block")) {
+      focusChecklistItem(block.querySelector(".check-item"), 0);
+    } else if (block.classList.contains("bullet-list-block")) {
+      focusBulletItem(block.querySelector(".bullet-item"), 0);
+    } else {
+      focusTextBlock(block, false);
+    }
+  }
+
+  function focusBlockEnd(block) {
+    if (!block) return;
+    if (block.classList.contains("checklist-block")) {
+      const items = block.querySelectorAll(".check-item");
+      const last = items[items.length - 1];
+      if (last) focusChecklistItem(last, last.querySelector(".line-text").value.length);
+    } else if (block.classList.contains("bullet-list-block")) {
+      const items = block.querySelectorAll(".bullet-item");
+      const last = items[items.length - 1];
+      if (last) focusBulletItem(last, last.querySelector(".line-text").value.length);
+    } else {
+      focusTextBlock(block, true);
+    }
   }
 
   function ensureTextBlockAfter(block) {
@@ -937,6 +1112,28 @@
     finishBodyChange();
   }
 
+  // A bullet list's equivalent of removeChecklistBlock — no undo toast here
+  // (bullets don't carry the checklist's credit/id bookkeeping, so there's
+  // nothing precious enough about losing one to warrant it).
+  function removeBulletListBlock(block) {
+    const textBlock = ensureTextBlockAfter(block);
+    block.remove();
+    focusTextBlock(textBlock, false);
+  }
+
+  // Ends the bullet list right at this row: an empty item is what "exiting"
+  // the list looks like, mirroring exitChecklistAt.
+  function exitBulletAt(row) {
+    const block = row.closest(".bullet-list-block");
+    const items = block.querySelectorAll(".bullet-item");
+    if (items.length === 1) {
+      removeBulletListBlock(block);
+    } else {
+      row.remove();
+      focusTextBlock(ensureTextBlockAfter(block), false);
+    }
+  }
+
   // Ends the checklist right at this row: an empty item is what "exiting"
   // a group looks like, matching how starting one requires the toolbar
   // button rather than any ad-hoc text.
@@ -955,11 +1152,18 @@
   // the toolbar's checklist button knows where to add to.
   function handleBodyFocusIn(event) {
     const target = event.target;
-    if (target.classList?.contains("line-text")) {
+    const bulletRow = target.classList?.contains("line-text") && target.closest(".bullet-item");
+    if (bulletRow) {
+      activeBulletItem = bulletRow;
+      activeItem = null;
+      activeBlock = target.closest(".bullet-list-block");
+    } else if (target.classList?.contains("line-text")) {
       activeItem = target.closest(".check-item");
+      activeBulletItem = null;
       activeBlock = target.closest(".checklist-block");
     } else if (target.classList?.contains("text-block")) {
       activeItem = null;
+      activeBulletItem = null;
       activeBlock = target;
     }
   }
@@ -1024,11 +1228,89 @@
     finishBodyChange();
   }
 
+  // The toolbar's bullet-list button — same cursor-splitting behavior as
+  // addChecklistGroup, but no credits (bullets aren't part of the
+  // checklist gamification).
+  function addBulletList() {
+    if (activeBulletItem) {
+      const level = parseInt(activeBulletItem.dataset.level || "0", 10);
+      const newItem = makeBulletItem("", level);
+      activeBulletItem.after(newItem);
+      focusBulletItem(newItem, 0);
+    } else {
+      const afterBlock = activeBlock || bodyEl.lastElementChild;
+      const list = makeBulletListBlock([""]);
+
+      const splitBlock =
+        afterBlock &&
+        afterBlock.classList?.contains("text-block") &&
+        savedTextRange &&
+        afterBlock.contains(savedTextRange.startContainer)
+          ? afterBlock
+          : null;
+
+      if (splitBlock) {
+        const range = savedTextRange.cloneRange();
+        range.setEnd(splitBlock, splitBlock.childNodes.length);
+        const afterFragment = range.extractContents();
+
+        splitBlock.after(list);
+        const trailing = document.createElement("div");
+        trailing.className = "block text-block";
+        trailing.contentEditable = "true";
+        trailing.appendChild(afterFragment);
+        if (!trailing.textContent.trim()) {
+          trailing.innerHTML = "<br>";
+        }
+        list.after(trailing);
+
+        if (!splitBlock.textContent.trim()) {
+          splitBlock.innerHTML = "<br>";
+        }
+      } else if (afterBlock) {
+        afterBlock.after(list);
+      } else {
+        bodyEl.appendChild(list);
+      }
+
+      focusBulletItem(list.querySelector(".bullet-item"), 0);
+    }
+    finishBodyChange();
+  }
+
   // Enter/Backspace inside a checklist row. Typing lives entirely inside
   // the row's own <textarea>, so a checkbox can never be pushed out of
   // place by anything typed or pasted here.
   function handleItemKeydown(event, row) {
     const ta = row.querySelector(".line-text");
+
+    // Same row-at-a-time Up/Down as bullets (see handleBulletItemKeydown)
+    // so a checklist hands off to whatever block sits above/below it too.
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const prev = row.previousElementSibling;
+      if (prev && prev.classList.contains("check-item")) {
+        const prevTa = prev.querySelector(".line-text");
+        focusChecklistItem(prev, Math.min(ta.selectionStart, prevTa.value.length));
+      } else {
+        const before = row.closest(".checklist-block")?.previousElementSibling;
+        if (before) focusBlockEnd(before);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains("check-item")) {
+        const nextTa = next.querySelector(".line-text");
+        focusChecklistItem(next, Math.min(ta.selectionStart, nextTa.value.length));
+      } else {
+        const after = row.closest(".checklist-block")?.nextElementSibling;
+        if (after) focusBlockStart(after);
+      }
+      return;
+    }
 
     if (event.key === "Enter") {
       event.preventDefault();
@@ -1078,17 +1360,185 @@
     }
   }
 
+  // Tab/Shift+Tab (indent/outdent), Enter, and Backspace inside a bullet
+  // row. Enter/Backspace mirror handleItemKeydown's checklist behavior;
+  // Tab is the one thing bullets support that checklists don't.
+  function handleBulletItemKeydown(event, row) {
+    const ta = row.querySelector(".line-text");
+
+    if (event.key === "Tab") {
+      event.preventDefault();
+      const level = parseInt(row.dataset.level || "0", 10);
+      if (event.shiftKey) {
+        applyBulletLevel(row, level - 1);
+      } else {
+        // Can only indent one deeper than the item right above it — that's
+        // what makes it a *sub*-bullet of that item, rather than jumping to
+        // an arbitrary depth with nothing above it at that level.
+        const prev = row.previousElementSibling;
+        const prevLevel = prev ? parseInt(prev.dataset.level || "0", 10) : 0;
+        applyBulletLevel(row, Math.min(level + 1, prevLevel + 1));
+      }
+      finishBodyChange();
+      return;
+    }
+
+    // Up/Down move between bullet rows — each row is its own <textarea>,
+    // so the browser has no idea they're part of one list. These always
+    // move a row at a time (rather than only jumping at the start/end of
+    // the row's text) — a bullet row is effectively always "one line" in
+    // practice, and gating on the exact caret offset is what let the
+    // caret get stranded on a row whenever it landed anywhere but the
+    // very first/last character (e.g. right after arrowing in from a
+    // block above/below with a native, position-preserving column).
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const prev = row.previousElementSibling;
+      if (prev && prev.classList.contains("bullet-item")) {
+        const prevTa = prev.querySelector(".line-text");
+        focusBulletItem(prev, Math.min(ta.selectionStart, prevTa.value.length));
+      } else {
+        // Top of the list — hand off to whatever block comes before it.
+        const listBlock = row.closest(".bullet-list-block");
+        const before = listBlock?.previousElementSibling;
+        if (before) focusBlockEnd(before);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains("bullet-item")) {
+        const nextTa = next.querySelector(".line-text");
+        focusBulletItem(next, Math.min(ta.selectionStart, nextTa.value.length));
+      } else {
+        // Bottom of the list — hand off to whatever block comes after it.
+        const listBlock = row.closest(".bullet-list-block");
+        const after = listBlock?.nextElementSibling;
+        if (after) focusBlockStart(after);
+      }
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (ta.value.trim() === "") {
+        // An empty item is how you leave the bullet list and go back to
+        // writing plain text.
+        exitBulletAt(row);
+      } else {
+        const pos = ta.selectionStart ?? ta.value.length;
+        const before = ta.value.slice(0, pos);
+        const after = ta.value.slice(pos);
+        ta.value = before;
+        resizeTextarea(ta);
+        const level = parseInt(row.dataset.level || "0", 10);
+        const newItem = makeBulletItem(after, level);
+        row.after(newItem);
+        focusBulletItem(newItem, 0);
+      }
+      finishBodyChange();
+      return;
+    }
+
+    if (event.key === "Backspace") {
+      const atStart = ta.selectionStart === 0 && ta.selectionEnd === 0;
+      if (!atStart) return;
+      event.preventDefault();
+      // A row with text in it stays a bullet — only an empty row can be
+      // outdented-to-nothing/removed this way.
+      if (ta.value !== "") return;
+
+      const level = parseInt(row.dataset.level || "0", 10);
+      if (level > 0) {
+        // Backspace on an empty sub-bullet outdents it first, same as most
+        // editors — only an empty *top-level* bullet gets removed/merged.
+        applyBulletLevel(row, level - 1);
+        finishBodyChange();
+        return;
+      }
+
+      const block = row.closest(".bullet-list-block");
+      const items = Array.from(block.querySelectorAll(".bullet-item"));
+      if (items.length === 1) {
+        removeBulletListBlock(block);
+      } else {
+        const idx = items.indexOf(row);
+        const prev = items[idx - 1];
+        const next = items[idx + 1];
+        row.remove();
+        if (prev) {
+          focusBulletItem(prev, prev.querySelector(".line-text").value.length);
+        } else {
+          focusBulletItem(next, 0);
+        }
+      }
+      finishBodyChange();
+    }
+  }
+
+  // Whether the caret sits on the first/last *visual* (wrapped) line of a
+  // contenteditable text-block — needed because Up/Down has to know when
+  // it's at the block's true top/bottom edge, not just the start/end of
+  // its text, before handing off to whatever block sits next to it.
+  function caretAtFirstLine(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return true;
+    const range = sel.getRangeAt(0).cloneRange();
+    range.collapse(true);
+    const rect = range.getClientRects()[0] || range.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;
+    return rect.top - elRect.top < lineHeight / 2;
+  }
+
+  function caretAtLastLine(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return true;
+    const range = sel.getRangeAt(0).cloneRange();
+    range.collapse(true);
+    const rects = range.getClientRects();
+    const rect = rects[rects.length - 1] || range.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;
+    return elRect.bottom - rect.bottom < lineHeight / 2;
+  }
+
   function handleBodyKeydown(event) {
     if (event.target.classList?.contains("line-text")) {
-      handleItemKeydown(event, event.target.closest(".check-item"));
+      const bulletRow = event.target.closest(".bullet-item");
+      if (bulletRow) {
+        handleBulletItemKeydown(event, bulletRow);
+      } else {
+        handleItemKeydown(event, event.target.closest(".check-item"));
+      }
     } else if (event.target.classList?.contains("checklist-title")) {
       if (event.key === "Enter") {
         event.preventDefault();
         event.target.blur();
       }
+    } else if (event.target.classList?.contains("text-block")) {
+      // The browser splits/merges paragraphs on Enter/Backspace natively,
+      // and moves the caret line-by-line within the block on Up/Down —
+      // intercepted only right at the block's own top/bottom edge, to
+      // hand off to the checklist/bullet-list/text-block next to it
+      // (crossing from one contenteditable root, or a plain <textarea>
+      // row, into another isn't something the browser does on its own).
+      if (event.key === "ArrowDown" && caretAtLastLine(event.target)) {
+        const next = event.target.nextElementSibling;
+        if (next) {
+          event.preventDefault();
+          focusBlockStart(next);
+        }
+      } else if (event.key === "ArrowUp" && caretAtFirstLine(event.target)) {
+        const prev = event.target.previousElementSibling;
+        if (prev) {
+          event.preventDefault();
+          focusBlockEnd(prev);
+        }
+      }
     }
-    // Text blocks: no interception needed — the browser splits/merges
-    // paragraphs on Enter/Backspace natively.
   }
 
   function handleBodyChange(event) {
@@ -1161,6 +1611,12 @@
       const lastItem = items[items.length - 1];
       if (lastItem) {
         focusChecklistItem(lastItem, lastItem.querySelector(".line-text").value.length);
+      }
+    } else if (last.classList.contains("bullet-list-block")) {
+      const items = last.querySelectorAll(".bullet-item");
+      const lastItem = items[items.length - 1];
+      if (lastItem) {
+        focusBulletItem(lastItem, lastItem.querySelector(".line-text").value.length);
       }
     } else {
       focusTextBlock(last, true);
@@ -1293,15 +1749,6 @@
 
 <div class="editor">
   <div class="toolbar">
-      <div class="credits-badge" title="Credits — earned by creating checklists and completing items">
-        <span class="credits-coin">⬡</span>{credits}
-        <div class="credit-toasts" aria-hidden="true">
-          {#each creditToasts as t (t.id)}
-            <span class="credit-toast">+{t.amount}</span>
-          {/each}
-        </div>
-      </div>
-
       <button
         type="button"
         class="icon-btn"
@@ -1321,27 +1768,6 @@
           <path
             d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
           />
-        </svg>
-      </button>
-
-      <button
-        type="button"
-        class="icon-btn"
-        title="Store"
-        onclick={openStore}
-      >
-        <svg
-          class="icon-svg"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M6 2 3 7v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-3-5Z" />
-          <path d="M3 7h18" />
-          <path d="M16 11a4 4 0 0 1-8 0" />
         </svg>
       </button>
 
@@ -1412,6 +1838,62 @@
       >
         <img src={checklistIcon} class="icon-img" alt="" />
       </button>
+
+      <button
+        type="button"
+        class="icon-btn"
+        title="Add bullet list"
+        onclick={addBulletList}
+      >
+        <svg
+          class="icon-svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="4" cy="6" r="1.4" fill="currentColor" stroke="none" />
+          <circle cx="4" cy="12" r="1.4" fill="currentColor" stroke="none" />
+          <circle cx="4" cy="18" r="1.4" fill="currentColor" stroke="none" />
+          <line x1="9" y1="6" x2="20" y2="6" />
+          <line x1="9" y1="12" x2="20" y2="12" />
+          <line x1="9" y1="18" x2="20" y2="18" />
+        </svg>
+      </button>
+
+      <div class="toolbar-right">
+        <button
+          type="button"
+          class="icon-btn"
+          title="Store"
+          onclick={openStore}
+        >
+          <svg
+            class="icon-svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M6 2 3 7v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-3-5Z" />
+            <path d="M3 7h18" />
+            <path d="M16 11a4 4 0 0 1-8 0" />
+          </svg>
+        </button>
+
+        <div class="credits-badge" title="Credits — earned by creating checklists and completing items">
+          <span class="credits-coin">⬡</span>{credits}
+          <div class="credit-toasts" aria-hidden="true">
+            {#each creditToasts as t (t.id)}
+              <span class="credit-toast">+{t.amount}</span>
+            {/each}
+          </div>
+        </div>
+      </div>
   </div>
 
   <div class="scroll-area">
@@ -1718,6 +2200,46 @@
         {/if}
       </div>
 
+      <div class="settings-section">
+        <p class="settings-label">About</p>
+        <div class="about-box">
+          <p class="about-name">(OverNote_)</p>
+          <p class="about-version">{appVersion ? `Version ${appVersion}` : "Version —"}</p>
+          <div class="about-update-row">
+            {#if aboutCheckStatus === "checking"}
+              <span class="about-update-status">Checking…</span>
+            {:else if aboutCheckStatus === "current"}
+              <span class="about-update-status">You're up to date.</span>
+            {:else if aboutCheckStatus === "available"}
+              <span class="about-update-status">
+                Update {aboutUpdateVersion} is available — it'll install next time it's ready, or
+                close and reopen the app.
+              </span>
+            {:else if aboutCheckStatus === "error"}
+              <span class="about-update-status">
+                Couldn't check right now — check your connection.
+              </span>
+            {:else}
+              <button type="button" class="settings-hint-link" onclick={checkForUpdateFromAbout}>
+                Check for updates
+              </button>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <p class="settings-label">Backup</p>
+        <button type="button" class="settings-btn" onclick={backupNotes} disabled={backupStatus === "saving"}>
+          {backupStatus === "saving" ? "Saving…" : "Download a backup of your notes"}
+        </button>
+        {#if backupStatus === "done"}
+          <p class="settings-hint">Backup saved.</p>
+        {:else if backupStatus === "error"}
+          <p class="settings-hint">Couldn't save the backup — try again.</p>
+        {/if}
+      </div>
+
       <div class="modal-actions">
         <button type="button" class="modal-btn modal-cancel" onclick={cancelSettings}>
           Cancel
@@ -1825,7 +2347,7 @@
        rather than floating with a gap of dead space past it. The header,
        title and tags rows inside it add their own right padding so they
        still line up the same as before, clear of the scrollbar. */
-    padding: 24px 0 24px 32px;
+    padding: 12px 0 24px 32px;
     background: #1e1e1e;
     color: #e6e6e6;
     box-sizing: border-box;
@@ -1837,25 +2359,36 @@
     zoom: var(--ui-scale, 1);
   }
 
-  /* A vertical stack — Settings, Find, Save-as-template, Checklist, top to
-     bottom — floating over the top-right corner of the note (like the old
-     "fab" buttons) rather than reserving its own row, so it never pushes
-     the title/body down. Hugs the pane's right edge with a small 8px gap. */
+  /* A normal horizontal row — Credits, Settings, Store, Find,
+     Save-as-template, Checklist, Bullet list, left to right — sitting
+     above the scrollable note instead of floating over its top-right
+     corner, so there's room to grow (the Stage 2 formatting buttons) and
+     nothing ever overlaps the title/body text. */
   .toolbar {
-    position: absolute;
-    top: 24px;
-    right: 8px;
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    flex-shrink: 0;
     gap: 8px;
-    z-index: 5;
+    padding: 0 16px 16px 0;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #2a2a2a;
   }
 
   .find-row {
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  /* Pushed to the toolbar's far right (everything else stays left-aligned)
+     — Store, then Credits, hugging the pane's right edge. */
+  .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
   }
 
   .credits-badge {
@@ -2308,6 +2841,32 @@
     }
   }
 
+  :global(.body-editor .bullet-list-block) {
+    display: flex;
+    flex-direction: column;
+    margin: 6px 0;
+  }
+
+  :global(.body-editor .bullet-item) {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    min-height: 28px;
+  }
+
+  :global(.body-editor .bullet-marker) {
+    flex-shrink: 0;
+    width: 16px;
+    margin-top: 4px;
+    text-align: center;
+    color: #888;
+    user-select: none;
+  }
+
+  :global(.body-editor .bullet-text) {
+    flex: 1;
+  }
+
   :global(.body-editor mark.hl-mark) {
     background: rgba(255, 215, 0, 0.35);
     border-radius: 2px;
@@ -2526,6 +3085,56 @@
     text-decoration: underline;
     cursor: pointer;
     font-size: inherit;
+  }
+
+  .settings-btn {
+    width: 100%;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 9px 12px;
+    background: #262626;
+    color: #e6e6e6;
+    font-size: 0.85rem;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .settings-btn:hover {
+    background: #2f2f2f;
+  }
+
+  .settings-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .about-box {
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 12px 14px;
+    background: #1b1b1b;
+  }
+
+  .about-name {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #e6e6e6;
+  }
+
+  .about-version {
+    margin: 2px 0 0;
+    font-size: 0.78rem;
+    color: #888;
+  }
+
+  .about-update-row {
+    margin-top: 10px;
+  }
+
+  .about-update-status {
+    font-size: 0.78rem;
+    color: #999;
   }
 
   .scale-slider {

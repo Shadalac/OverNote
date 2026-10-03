@@ -13,6 +13,9 @@ const SCHEMA = `
     updated_at TEXT NOT NULL
   );
 
+  -- pinned/pin_order are on the notes table (not a separate table) since
+  -- every note has at most one pin state and this keeps ORDER BY simple.
+
   CREATE TABLE IF NOT EXISTS templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -42,6 +45,7 @@ function getDb() {
       await db.execute(SCHEMA);
       await addTagsColumnIfMissing(db);
       await addEarnedItemIdsColumnIfMissing(db);
+      await addPinColumnsIfMissing(db);
       return db;
     });
   }
@@ -72,10 +76,24 @@ async function addEarnedItemIdsColumnIfMissing(db) {
   }
 }
 
+// Same idea, for pinning: which notes are pinned to the top of the sidebar,
+// and what order they appear in within that pinned group (lower = earlier).
+// Unpinned notes keep pin_order at 0 — it's meaningless for them since the
+// ORDER BY below only uses it to break ties among pinned rows.
+async function addPinColumnsIfMissing(db) {
+  const columns = await db.select("PRAGMA table_info(notes)");
+  if (!columns.some((c) => c.name === "pinned")) {
+    await db.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!columns.some((c) => c.name === "pin_order")) {
+    await db.execute("ALTER TABLE notes ADD COLUMN pin_order INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
 export async function listNotes() {
   const db = await getDb();
   return db.select(
-    "SELECT id, title, body, tags, earned_item_ids, created_at, updated_at FROM notes ORDER BY updated_at DESC"
+    "SELECT id, title, body, tags, earned_item_ids, pinned, pin_order, created_at, updated_at FROM notes ORDER BY pinned DESC, pin_order ASC, updated_at DESC"
   );
 }
 
@@ -101,6 +119,37 @@ export async function updateNote(id, title, body, tags, earnedItemIds = "") {
 export async function deleteNote(id) {
   const db = await getDb();
   await db.execute("DELETE FROM notes WHERE id = $1", [id]);
+}
+
+// ---- Pinning ------------------------------------------------------------
+
+// Pinning puts a note at the end of the pinned group (highest pin_order so
+// far + 1) rather than the front, so newly-pinned notes don't jump ahead of
+// ones the user already arranged by hand. Unpinning just clears both fields.
+export async function setNotePinned(id, pinned) {
+  const db = await getDb();
+  if (pinned) {
+    const rows = await db.select(
+      "SELECT COALESCE(MAX(pin_order), 0) as maxOrder FROM notes WHERE pinned = 1"
+    );
+    const nextOrder = (rows[0]?.maxOrder ?? 0) + 1;
+    await db.execute("UPDATE notes SET pinned = 1, pin_order = $1 WHERE id = $2", [
+      nextOrder,
+      id,
+    ]);
+  } else {
+    await db.execute("UPDATE notes SET pinned = 0, pin_order = 0 WHERE id = $1", [id]);
+  }
+}
+
+// Persists a full drag-and-drop reorder of the pinned group: `orderedIds` is
+// every currently-pinned note's id, top to bottom, exactly as the user left
+// it in the sidebar.
+export async function reorderPinnedNotes(orderedIds) {
+  const db = await getDb();
+  for (let i = 0; i < orderedIds.length; i++) {
+    await db.execute("UPDATE notes SET pin_order = $1 WHERE id = $2", [i + 1, orderedIds[i]]);
+  }
 }
 
 // ---- Templates ------------------------------------------------------------

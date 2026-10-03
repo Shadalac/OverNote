@@ -8,6 +8,8 @@
     templates = [],
     onNewFromTemplate,
     onDeleteTemplate,
+    onTogglePin,
+    onReorderPinned,
   } = $props();
 
   let searchQuery = $state("");
@@ -108,6 +110,58 @@
     activeTag = activeTag === tag ? null : tag;
   }
 
+  // `notes` (and therefore filteredNotes) already arrives pinned-first, in
+  // pin_order, from the database — so splitting it here just separates the
+  // two groups for rendering a "Pinned" heading; it doesn't need its own
+  // sort.
+  let pinnedNotes = $derived(filteredNotes.filter((n) => n.pinned));
+  let unpinnedNotes = $derived(filteredNotes.filter((n) => !n.pinned));
+
+  // Drag-to-reorder only ever touches the pinned group, and it needs to
+  // compute positions against *every* pinned note (not just the ones a
+  // search/tag filter currently shows) so reordering while filtered can't
+  // scramble the order of pinned notes that are temporarily hidden.
+  let allPinnedIds = $derived(notes.filter((n) => n.pinned).map((n) => n.id));
+
+  let dragId = $state(null);
+  let dragOverId = $state(null);
+
+  function handleDragStart(event, note) {
+    dragId = note.id;
+    event.dataTransfer.effectAllowed = "move";
+    // Firefox requires data to actually be set for the drag to start.
+    event.dataTransfer.setData("text/plain", String(note.id));
+  }
+
+  function handleDragOver(event, note) {
+    if (dragId === null || dragId === note.id) return;
+    event.preventDefault();
+    dragOverId = note.id;
+  }
+
+  function handleDragLeave(note) {
+    if (dragOverId === note.id) dragOverId = null;
+  }
+
+  function handleDrop(event, note) {
+    event.preventDefault();
+    dragOverId = null;
+    if (dragId === null || dragId === note.id) return;
+    const fromIndex = allPinnedIds.indexOf(dragId);
+    const toIndex = allPinnedIds.indexOf(note.id);
+    dragId = null;
+    if (fromIndex === -1 || toIndex === -1) return;
+    const reordered = [...allPinnedIds];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+    onReorderPinned?.(reordered);
+  }
+
+  function handleDragEnd() {
+    dragId = null;
+    dragOverId = null;
+  }
+
   function preview(body) {
     // Swap markdown-style checklist markup for a plain glyph so the sidebar
     // preview reads naturally instead of showing raw "- [ ] " syntax.
@@ -162,29 +216,75 @@
     <p class="empty">No notes match your search.</p>
   {/if}
 
-  <ul>
-    {#each filteredNotes as note (note.id)}
-      <li class:selected={note.id === selectedId}>
-        <button class="note-row" onclick={() => onSelect(note.id)}>
-          <span class="title">{note.title || "Untitled note"}</span>
-          <span class="preview">{preview(note.body) || "No content"}</span>
-          {#if parseTags(note.tags).length > 0}
-            <span class="row-tags">
-              {#each parseTags(note.tags) as tag}
-                <span class="row-tag">{tag}</span>
-              {/each}
-            </span>
-          {/if}
-          <span class="date">{formatDate(note.updated_at)}</span>
-        </button>
-        <button
-          class="delete-btn"
-          title="Delete note"
-          onclick={() => requestDelete(note)}
+  {#snippet noteRow(note, draggable)}
+    <li
+      class:selected={note.id === selectedId}
+      class:drag-over={draggable && dragOverId === note.id}
+      class:dragging={draggable && dragId === note.id}
+      draggable={draggable}
+      ondragstart={draggable ? (e) => handleDragStart(e, note) : undefined}
+      ondragover={draggable ? (e) => handleDragOver(e, note) : undefined}
+      ondragleave={draggable ? () => handleDragLeave(note) : undefined}
+      ondrop={draggable ? (e) => handleDrop(e, note) : undefined}
+      ondragend={draggable ? handleDragEnd : undefined}
+    >
+      <button class="note-row" onclick={() => onSelect(note.id)}>
+        <span class="title">{note.title || "Untitled note"}</span>
+        <span class="preview">{preview(note.body) || "No content"}</span>
+        {#if parseTags(note.tags).length > 0}
+          <span class="row-tags">
+            {#each parseTags(note.tags) as tag}
+              <span class="row-tag">{tag}</span>
+            {/each}
+          </span>
+        {/if}
+        <span class="date">{formatDate(note.updated_at)}</span>
+      </button>
+      <button
+        type="button"
+        class="pin-btn"
+        class:pinned={note.pinned}
+        title={note.pinned ? "Unpin note" : "Pin note"}
+        onclick={() => onTogglePin?.(note.id)}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill={note.pinned ? "currentColor" : "none"}
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          ×
-        </button>
-      </li>
+          <path fill="none" d="M12 17v5" />
+          <path
+            d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"
+          />
+        </svg>
+      </button>
+      <button
+        class="delete-btn"
+        title="Delete note"
+        onclick={() => requestDelete(note)}
+      >
+        ×
+      </button>
+    </li>
+  {/snippet}
+
+  <ul>
+    {#if pinnedNotes.length > 0}
+      <li class="group-label">Pinned</li>
+      {#each pinnedNotes as note (note.id)}
+        {@render noteRow(note, true)}
+      {/each}
+      {#if unpinnedNotes.length > 0}
+        <li class="group-label">Notes</li>
+      {/if}
+    {/if}
+    {#each unpinnedNotes as note (note.id)}
+      {@render noteRow(note, false)}
     {/each}
   </ul>
 </div>
@@ -430,6 +530,30 @@
     background: #232323;
   }
 
+  li[draggable="true"] {
+    cursor: grab;
+  }
+
+  li.dragging {
+    opacity: 0.4;
+  }
+
+  /* Shown while another pinned row is being dragged over this one, as the
+     drop target indicator. */
+  li.drag-over {
+    box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 transparent;
+  }
+
+  .group-label {
+    padding: 8px 12px 4px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #777;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: none;
+  }
+
   .note-row {
     flex: 1;
     display: flex;
@@ -480,6 +604,35 @@
   .date {
     font-size: 0.72rem;
     color: #666;
+  }
+
+  .pin-btn {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: none;
+    color: #666;
+    cursor: pointer;
+    padding: 0 6px;
+    /* Hidden until the row is hovered, unless the note is already pinned —
+       then it stays visible (filled) so there's always a visible way to
+       unpin it. */
+    opacity: 0;
+  }
+
+  li:hover .pin-btn,
+  .pin-btn.pinned {
+    opacity: 1;
+  }
+
+  .pin-btn:hover {
+    color: var(--accent-text);
+  }
+
+  .pin-btn.pinned {
+    color: var(--accent);
   }
 
   .delete-btn {

@@ -1,5 +1,7 @@
 <script>
   import { onMount } from "svelte";
+  import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
+  import { relaunch } from "@tauri-apps/plugin-process";
   import NoteList from "./lib/NoteList.svelte";
   import NoteEditor from "./lib/NoteEditor.svelte";
   import PetWindow from "./lib/PetWindow.svelte";
@@ -17,6 +19,8 @@
     deleteTagEverywhere,
     getAppState,
     setAppState,
+    setNotePinned,
+    reorderPinnedNotes,
   } from "./lib/db.js";
   import { THEMES_CATALOG, PETS_CATALOG } from "./lib/gamification.js";
 
@@ -74,9 +78,52 @@
     PETS_CATALOG.filter((p) => appState.ownedPets.includes(p.id))
   );
 
+  // ---- Auto-update -------------------------------------------------------
+  //
+  // A quiet background check against the GitHub Releases feed configured in
+  // tauri.conf.json's `plugins.updater`. This is the one time the otherwise-
+  // offline app touches the network on its own — it's a single small
+  // version check, and failing (no internet, no release published yet) is
+  // silent rather than shown as an error, since it's a convenience, not a
+  // feature the user depends on to use their notes.
+  let pendingUpdate = $state(null); // the Update object from the plugin, once one's found
+  let updateStage = $state("idle"); // idle | downloading | installing | error
+  let updateError = $state(null);
+
+  async function checkForAppUpdate() {
+    try {
+      const update = await checkForUpdate();
+      if (update?.available) {
+        pendingUpdate = update;
+      }
+    } catch {
+      // No internet, no release yet, or the endpoint 404s — nothing to
+      // surface to the user for a background check.
+    }
+  }
+
+  async function installPendingUpdate() {
+    if (!pendingUpdate) return;
+    try {
+      updateStage = "downloading";
+      await pendingUpdate.downloadAndInstall();
+      updateStage = "installing";
+      await relaunch();
+    } catch (err) {
+      updateStage = "error";
+      updateError = String(err);
+    }
+  }
+
+  function dismissUpdate() {
+    pendingUpdate = null;
+    updateStage = "idle";
+  }
+
   onMount(async () => {
     await Promise.all([refresh(), refreshTemplates(), refreshAppState()]);
     loading = false;
+    checkForAppUpdate();
   });
 
   async function refreshAppState() {
@@ -197,9 +244,14 @@
       note.tags = tags;
       note.earned_item_ids = earnedItemIds;
       note.updated_at = new Date().toISOString();
-      notes = [...notes].sort(
-        (a, b) => new Date(b.updated_at) - new Date(a.updated_at)
-      );
+      // Mirrors listNotes()'s ORDER BY: pinned notes stay grouped at the top
+      // in their pin_order, and only the unpinned rest re-sorts by recency —
+      // editing a note should never shuffle the pinned group around.
+      notes = [...notes].sort((a, b) => {
+        if (a.pinned !== b.pinned) return b.pinned - a.pinned;
+        if (a.pinned) return a.pin_order - b.pin_order;
+        return new Date(b.updated_at) - new Date(a.updated_at);
+      });
     }
   }
 
@@ -209,6 +261,26 @@
       selectedId = null;
     }
     await refresh();
+  }
+
+  async function handleTogglePin(id) {
+    const note = notes.find((n) => n.id === id);
+    if (!note) return;
+    await setNotePinned(id, !note.pinned);
+    await refresh();
+  }
+
+  // Optimistically reorders the local list so the drag feels instant, then
+  // persists it — orderedIds is every pinned note's id, top to bottom.
+  async function handleReorderPinned(orderedIds) {
+    const order = new Map(orderedIds.map((id, i) => [id, i + 1]));
+    const pinnedNotes = orderedIds
+      .map((id) => notes.find((n) => n.id === id))
+      .filter(Boolean)
+      .map((n) => ({ ...n, pin_order: order.get(n.id) }));
+    const restNotes = notes.filter((n) => !order.has(n.id));
+    notes = [...pinnedNotes, ...restNotes];
+    await reorderPinnedNotes(orderedIds);
   }
 </script>
 
@@ -240,6 +312,8 @@
           onDelete={handleDelete}
           onNewFromTemplate={handleNewFromTemplate}
           onDeleteTemplate={handleDeleteTemplate}
+          onTogglePin={handleTogglePin}
+          onReorderPinned={handleReorderPinned}
         />
       {:else}
         <div class="sidebar-placeholder"></div>
@@ -278,6 +352,26 @@
       onToggleWindow={handleTogglePetsWindow}
       onEarnCredits={handleEarnCredits}
     />
+    {#if pendingUpdate}
+      <div class="update-banner">
+        {#if updateStage === "error"}
+          <span class="update-text">Update failed: {updateError}</span>
+          <button class="update-dismiss" onclick={dismissUpdate}>Dismiss</button>
+        {:else if updateStage === "downloading"}
+          <span class="update-text">Downloading update…</span>
+        {:else if updateStage === "installing"}
+          <span class="update-text">Installing — restarting…</span>
+        {:else}
+          <span class="update-text">Update {pendingUpdate.version} is available</span>
+          <button class="update-install" onclick={installPendingUpdate}>
+            Install &amp; Restart
+          </button>
+          <button class="update-dismiss" onclick={dismissUpdate} title="Dismiss">
+            ×
+          </button>
+        {/if}
+      </div>
+    {/if}
   {/if}
 </main>
 
@@ -472,5 +566,58 @@
     color: #ef4444;
     padding: 24px;
     text-align: center;
+  }
+
+  /* Deliberately understated and easy to dismiss — this is a convenience
+     notice, not something that should interrupt note-taking the way the
+     credits/pet UI's more playful feedback does. */
+  .update-banner {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px 8px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--accent, #333);
+    background: #1f1f1f;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+    font-size: 0.8rem;
+    color: #e6e6e6;
+  }
+
+  .update-text {
+    white-space: nowrap;
+  }
+
+  .update-install {
+    border: none;
+    border-radius: 6px;
+    padding: 5px 10px;
+    background: var(--accent);
+    color: white;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .update-install:hover {
+    background: var(--accent-hover);
+  }
+
+  .update-dismiss {
+    border: none;
+    background: none;
+    color: #888;
+    font-size: 0.95rem;
+    cursor: pointer;
+    padding: 2px 4px;
+  }
+
+  .update-dismiss:hover {
+    color: #ccc;
   }
 </style>
