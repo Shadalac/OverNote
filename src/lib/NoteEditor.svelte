@@ -32,6 +32,8 @@
     onBuyTheme,
     onBuyPet,
     onCreateCustomPet,
+    onUpdateCustomPet,
+    onDeleteCustomPet,
   } = $props();
 
   // ---- Settings: color palette + UI scale ----------------------------------
@@ -72,6 +74,18 @@
     }
   }
 
+  // Holo-Pets dock size — a separate slider/variable from the overall UI
+  // scale above, since the user may want a bigger pet without blowing up
+  // every other control in the app.
+  function loadPetScale() {
+    try {
+      const v = parseFloat(localStorage.getItem("overnote-pet-scale"));
+      return Number.isFinite(v) && v >= 0.8 && v <= 2.2 ? v : 1;
+    } catch {
+      return 1;
+    }
+  }
+
   function applyTheme(theme) {
     try {
       document.documentElement.setAttribute("data-theme", theme);
@@ -83,6 +97,14 @@
   function applyScale(scale) {
     try {
       document.documentElement.style.setProperty("--ui-scale", scale);
+    } catch {
+      // no-op
+    }
+  }
+
+  function applyPetScale(scale) {
+    try {
+      document.documentElement.style.setProperty("--pet-scale", scale);
     } catch {
       // no-op
     }
@@ -102,14 +124,21 @@
 
   let committedTheme = loadTheme();
   let committedScale = loadScale();
+  let committedPetScale = loadPetScale();
   // Applied on every mount (harmless/idempotent on a note switch) so the
   // whole app reflects the saved preference from the start.
   applyTheme(committedTheme);
   applyScale(committedScale);
+  applyPetScale(committedPetScale);
 
   let settingsOpen = $state(false);
-  let pendingTheme = $state(committedTheme);
-  let pendingScale = $state(committedScale);
+  // Settings now applies and saves every change immediately (theme, UI
+  // scale, pet size) — there's nothing to "commit" on a Save click or roll
+  // back on Cancel, so these are just plain reactive state rather than a
+  // pending/committed pair.
+  let selectedTheme = $state(committedTheme);
+  let selectedScale = $state(committedScale);
+  let selectedPetScale = $state(committedPetScale);
 
   // Manage tags/templates: renaming is a small inline edit within the list,
   // one row at a time.
@@ -172,11 +201,15 @@
     }, 3000);
   }
 
+  // Settings has a second, full-size "page" for editing one custom pet
+  // (more room than cramming an edit form into its list row) — this is
+  // which page is showing, independent of settingsOpen itself.
+  let settingsView = $state("main"); // "main" | "manage-pet"
+
   function openSettings() {
-    pendingTheme = committedTheme;
-    pendingScale = committedScale;
     editingTag = null;
     editingTemplateId = null;
+    settingsView = "main";
     settingsOpen = true;
     if (!appVersion) {
       getVersion()
@@ -188,40 +221,48 @@
     }
   }
 
-  function selectPendingTheme(theme) {
+  function selectTheme(theme) {
     if (!unlockedThemes.includes(theme)) return; // locked — buy it in the Store first
-    pendingTheme = theme;
-    applyTheme(theme); // live preview
-  }
-
-  function handleScaleInput(event) {
-    pendingScale = parseFloat(event.target.value);
-    applyScale(pendingScale); // live preview
-    remeasureAllTextareas();
-  }
-
-  function cancelSettings() {
-    applyTheme(committedTheme);
-    applyScale(committedScale);
-    settingsOpen = false;
-    remeasureAllTextareas();
-  }
-
-  function saveSettings() {
-    committedTheme = pendingTheme;
-    committedScale = pendingScale;
+    selectedTheme = theme;
+    committedTheme = theme;
+    applyTheme(theme);
     try {
       localStorage.setItem("overnote-theme", committedTheme);
-      localStorage.setItem("overnote-ui-scale", String(committedScale));
     } catch {
       // Preference just won't survive a restart — the rest of the app still
       // works fine for this session.
     }
+  }
+
+  function handleScaleInput(event) {
+    selectedScale = parseFloat(event.target.value);
+    committedScale = selectedScale;
+    applyScale(committedScale);
+    remeasureAllTextareas();
+    try {
+      localStorage.setItem("overnote-ui-scale", String(committedScale));
+    } catch {
+      // no-op
+    }
+  }
+
+  function handlePetScaleInput(event) {
+    selectedPetScale = parseFloat(event.target.value);
+    committedPetScale = selectedPetScale;
+    applyPetScale(committedPetScale);
+    try {
+      localStorage.setItem("overnote-pet-scale", String(committedPetScale));
+    } catch {
+      // no-op
+    }
+  }
+
+  function closeSettings() {
     settingsOpen = false;
   }
 
   function handleSettingsModalKeydown(event) {
-    if (event.key === "Escape") cancelSettings();
+    if (event.key === "Escape") closeSettings();
   }
 
   // ---- Store: spend credits on themes and pets ----------------------------
@@ -269,11 +310,19 @@
     onBuyPet?.(petId);
   }
 
-  // ---- Store: "Create a custom pet" (name + your own uploaded image) ------
+  // ---- Store: "Create a custom pet" (name + your own uploaded images) -----
   let creatingCustomPet = $state(false);
   let customPetName = $state("");
-  let customPetImageDataUrl = $state(null); // resized, ready to submit
-  let customPetPicking = $state(false); // while the file dialog/read is in flight
+  // Three image categories the pet picks a random frame from (every 2-7s,
+  // see PetWindow.svelte) depending on its current mood — each is a list of
+  // resized, ready-to-submit data URLs so a mood can have more than one
+  // frame to cycle through. "Hungry"/"playful" are optional: left empty,
+  // that mood just reuses the idle frames (see App.svelte's
+  // handleCreateCustomPet) rather than the pet going blank on that occasion.
+  let customPetImagesIdle = $state([]);
+  let customPetImagesHungry = $state([]);
+  let customPetImagesPlayful = $state([]);
+  let customPetPicking = $state(null); // which category's dialog/read is in flight, if any
   let customPetError = $state(null);
   // Four saying groups, each typed as one line per saying — left blank,
   // a group falls back to the built-in generic lines (see App.svelte's
@@ -294,7 +343,9 @@
   function startCreateCustomPet() {
     creatingCustomPet = true;
     customPetName = "";
-    customPetImageDataUrl = null;
+    customPetImagesIdle = [];
+    customPetImagesHungry = [];
+    customPetImagesPlayful = [];
     customPetError = null;
     customPetSayingsIdle = "";
     customPetSayingsPet = "";
@@ -333,35 +384,185 @@
     });
   }
 
-  async function pickCustomPetImage() {
+  function customPetImageListFor(category) {
+    if (category === "hungry") return customPetImagesHungry;
+    if (category === "playful") return customPetImagesPlayful;
+    return customPetImagesIdle;
+  }
+
+  function setCustomPetImageListFor(category, list) {
+    if (category === "hungry") customPetImagesHungry = list;
+    else if (category === "playful") customPetImagesPlayful = list;
+    else customPetImagesIdle = list;
+  }
+
+  // Lets the user pick several files at once for a category (e.g. a handful
+  // of "idle" frames to cycle through) rather than one file at a time.
+  async function pickCustomPetImages(category) {
     customPetError = null;
     try {
-      const path = await openDialog({
-        multiple: false,
+      const paths = await openDialog({
+        multiple: true,
         filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
       });
-      if (!path) return;
-      customPetPicking = true;
-      const dataUrl = await invoke("read_image_as_data_url", { path });
-      customPetImageDataUrl = await resizeImageDataUrl(dataUrl, 256);
+      if (!paths || paths.length === 0) return;
+      customPetPicking = category;
+      const list = Array.isArray(paths) ? paths : [paths];
+      const resized = [];
+      for (const path of list) {
+        const dataUrl = await invoke("read_image_as_data_url", { path });
+        resized.push(await resizeImageDataUrl(dataUrl, 256));
+      }
+      setCustomPetImageListFor(category, [...customPetImageListFor(category), ...resized]);
     } catch {
       customPetError = "Couldn't load that image.";
     } finally {
-      customPetPicking = false;
+      customPetPicking = null;
     }
+  }
+
+  function removeCustomPetImage(category, index) {
+    setCustomPetImageListFor(
+      category,
+      customPetImageListFor(category).filter((_, i) => i !== index)
+    );
   }
 
   function confirmCreateCustomPet() {
     const name = customPetName.trim();
-    if (!name || !customPetImageDataUrl || credits < CUSTOM_PET_COST) return;
+    if (!name || customPetImagesIdle.length === 0 || credits < CUSTOM_PET_COST) return;
+    const images = {
+      idle: customPetImagesIdle,
+      hungry: customPetImagesHungry,
+      playful: customPetImagesPlayful,
+    };
     const sayings = {
       idle: parseSayingLines(customPetSayingsIdle),
       pet: parseSayingLines(customPetSayingsPet),
       fed: parseSayingLines(customPetSayingsFed),
       played: parseSayingLines(customPetSayingsPlayed),
     };
-    onCreateCustomPet?.(name, customPetImageDataUrl, sayings);
+    onCreateCustomPet?.(name, images, sayings);
     creatingCustomPet = false;
+  }
+
+  // ---- Settings: manage existing custom pets (rename, change art, edit
+  // sayings, delete) — a separate draft object from the creation form above,
+  // since editing one pet shouldn't disturb an in-progress "create a new
+  // pet" flow and vice versa. ----
+  let managingPetId = $state(null); // id of the custom pet currently expanded for editing
+  let editPetDraft = $state(null); // { name, images: {idle,hungry,playful}, sayings: {...} }
+  let editPetPicking = $state(null); // which category's dialog/read is in flight, if any
+  let editPetError = $state(null);
+  let confirmDeletePet = $state(null); // the custom pet object pending delete confirmation
+
+  function startManagePet(pet) {
+    managingPetId = pet.id;
+    editPetError = null;
+    settingsView = "manage-pet";
+    editPetDraft = {
+      name: pet.name,
+      images: {
+        idle: [...(pet.images?.idle ?? [])],
+        hungry: [...(pet.images?.hungry ?? [])],
+        playful: [...(pet.images?.playful ?? [])],
+      },
+      sayings: {
+        idle: (pet.sayings?.idle ?? []).join("\n"),
+        pet: (pet.sayings?.pet ?? []).join("\n"),
+        fed: (pet.sayings?.fed ?? []).join("\n"),
+        played: (pet.sayings?.played ?? []).join("\n"),
+      },
+    };
+  }
+
+  // The manage-pet page's "← Back" — discards any unsaved edits, same as
+  // the Store's pack-navigation back button. Saving is its own explicit
+  // button (see saveManagePet) so there's no ambiguity between the two —
+  // that ambiguity (a single toggling "Manage"/"Close" button) is why
+  // sayings edits previously looked like they weren't being saved: closing
+  // the panel to "confirm" it was actually discarding it.
+  function cancelManagePet() {
+    managingPetId = null;
+    editPetDraft = null;
+    editPetError = null;
+    settingsView = "main";
+  }
+
+  async function pickEditPetImages(category) {
+    if (!editPetDraft) return;
+    editPetError = null;
+    try {
+      const paths = await openDialog({
+        multiple: true,
+        filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+      });
+      if (!paths || paths.length === 0) return;
+      editPetPicking = category;
+      const list = Array.isArray(paths) ? paths : [paths];
+      const resized = [];
+      for (const path of list) {
+        const dataUrl = await invoke("read_image_as_data_url", { path });
+        resized.push(await resizeImageDataUrl(dataUrl, 256));
+      }
+      editPetDraft.images[category] = [...editPetDraft.images[category], ...resized];
+    } catch {
+      editPetError = "Couldn't load that image.";
+    } finally {
+      editPetPicking = null;
+    }
+  }
+
+  function removeEditPetImage(category, index) {
+    if (!editPetDraft) return;
+    editPetDraft.images[category] = editPetDraft.images[category].filter((_, i) => i !== index);
+  }
+
+  function saveManagePet() {
+    if (!editPetDraft || !managingPetId) return;
+    const name = editPetDraft.name.trim();
+    if (!name || editPetDraft.images.idle.length === 0) return;
+    onUpdateCustomPet?.(managingPetId, {
+      name,
+      images: {
+        idle: editPetDraft.images.idle,
+        hungry: editPetDraft.images.hungry,
+        playful: editPetDraft.images.playful,
+      },
+      sayings: {
+        idle: parseSayingLines(editPetDraft.sayings.idle),
+        pet: parseSayingLines(editPetDraft.sayings.pet),
+        fed: parseSayingLines(editPetDraft.sayings.fed),
+        played: parseSayingLines(editPetDraft.sayings.played),
+      },
+    });
+    managingPetId = null;
+    editPetDraft = null;
+    settingsView = "main";
+  }
+
+  function requestDeletePet(pet) {
+    confirmDeletePet = pet;
+  }
+
+  function cancelDeletePet() {
+    confirmDeletePet = null;
+  }
+
+  function confirmDeletePetNow() {
+    if (!confirmDeletePet) return;
+    onDeleteCustomPet?.(confirmDeletePet.id);
+    if (managingPetId === confirmDeletePet.id) {
+      managingPetId = null;
+      editPetDraft = null;
+      settingsView = "main";
+    }
+    confirmDeletePet = null;
+  }
+
+  function handleDeletePetModalKeydown(event) {
+    if (event.key === "Escape") cancelDeletePet();
+    else if (event.key === "Enter") confirmDeletePetNow();
   }
 
   function startTagEdit(tag) {
@@ -2177,11 +2378,12 @@
     class="modal-overlay"
     role="button"
     tabindex="-1"
-    onclick={cancelSettings}
+    onclick={closeSettings}
     onkeydown={handleSettingsModalKeydown}
   >
     <div
       class="modal settings-modal"
+      class:manage-pet-view={settingsView === "manage-pet"}
       role="dialog"
       aria-modal="true"
       tabindex="-1"
@@ -2189,6 +2391,7 @@
       onclick={(e) => e.stopPropagation()}
       onkeydown={handleSettingsModalKeydown}
     >
+      {#if settingsView === "main"}
       <p class="modal-title">Settings</p>
 
       <div class="settings-section">
@@ -2201,10 +2404,10 @@
                 <button
                   type="button"
                   class="palette-swatch"
-                  class:active={pendingTheme === group.base.id}
+                  class:active={selectedTheme === group.base.id}
                   class:locked={!unlockedThemes.includes(group.base.id)}
                   title={unlockedThemes.includes(group.base.id) ? "" : `Locked — ${group.base.cost} credits in the Store`}
-                  onclick={() => selectPendingTheme(group.base.id)}
+                  onclick={() => selectTheme(group.base.id)}
                 >
                   <span class="swatch-dot" style="background: {group.base.preview};"></span>
                   {#if !unlockedThemes.includes(group.base.id)}
@@ -2215,10 +2418,10 @@
                   <button
                     type="button"
                     class="palette-swatch plus"
-                    class:active={pendingTheme === group.plus.id}
+                    class:active={selectedTheme === group.plus.id}
                     class:locked={!unlockedThemes.includes(group.plus.id)}
                     title={unlockedThemes.includes(group.plus.id) ? "" : `Locked — ${group.plus.cost} credits in the Store`}
-                    onclick={() => selectPendingTheme(group.plus.id)}
+                    onclick={() => selectTheme(group.plus.id)}
                   >
                     <span class="swatch-dot" style="background: {group.plus.preview};"></span>
                     <span class="swatch-plus-badge" aria-hidden="true">+</span>
@@ -2234,7 +2437,7 @@
         {#if PALETTES.some((p) => !unlockedThemes.includes(p.id))}
           <p class="settings-hint">
             🔒 Locked palettes can be unlocked in the
-            <button type="button" class="settings-hint-link" onclick={() => { cancelSettings(); openStore(); }}>
+            <button type="button" class="settings-hint-link" onclick={() => { closeSettings(); openStore(); }}>
               Store
             </button>.
           </p>
@@ -2242,16 +2445,30 @@
       </div>
 
       <div class="settings-section">
-        <p class="settings-label">UI scale — {Math.round(pendingScale * 100)}%</p>
+        <p class="settings-label">UI scale — {Math.round(selectedScale * 100)}%</p>
         <input
           type="range"
           class="scale-slider"
           min="0.8"
           max="1.6"
           step="0.05"
-          value={pendingScale}
+          value={selectedScale}
           oninput={handleScaleInput}
         />
+      </div>
+
+      <div class="settings-section">
+        <p class="settings-label">Holo-Pet size — {Math.round(selectedPetScale * 100)}%</p>
+        <input
+          type="range"
+          class="scale-slider"
+          min="0.8"
+          max="2.2"
+          step="0.05"
+          value={selectedPetScale}
+          oninput={handlePetScaleInput}
+        />
+        <p class="settings-hint">Resizes the Holo-Pets dock in the corner — frame, arrows, and feed/play buttons together.</p>
       </div>
 
       <div class="settings-section">
@@ -2344,6 +2561,29 @@
         {/if}
       </div>
 
+      {#if customPets.length > 0}
+        <div class="settings-section">
+          <p class="settings-label">Manage custom pets</p>
+          <ul class="manage-list">
+            {#each customPets as pet (pet.id)}
+              <li class="manage-row">
+                <span class="manage-name">{pet.name}</span>
+                <button type="button" class="manage-btn" onclick={() => startManagePet(pet)}>
+                  Manage
+                </button>
+                <button
+                  type="button"
+                  class="manage-btn manage-btn-danger"
+                  onclick={() => requestDeletePet(pet)}
+                >
+                  Delete
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
       <div class="settings-section">
         <p class="settings-label">About</p>
         <div class="about-box">
@@ -2385,11 +2625,155 @@
       </div>
 
       <div class="modal-actions">
-        <button type="button" class="modal-btn modal-cancel" onclick={cancelSettings}>
+        <button type="button" class="modal-btn modal-confirm" onclick={closeSettings}>
+          Done
+        </button>
+      </div>
+      {:else if settingsView === "manage-pet" && editPetDraft}
+        <div class="manage-pet-page-header">
+          <button type="button" class="manage-pet-back" onclick={cancelManagePet}>
+            ← Back
+          </button>
+          <p class="modal-title manage-pet-page-title">Manage {editPetDraft.name || "pet"}</p>
+        </div>
+
+        <div class="settings-section">
+          <input
+            type="text"
+            class="manage-input"
+            placeholder="Pet name"
+            bind:value={editPetDraft.name}
+            maxlength="24"
+          />
+        </div>
+
+        <div class="settings-section">
+          <p class="settings-label">Art</p>
+          {#each [{ key: "idle", label: "Idle (required)" }, { key: "hungry", label: "Hungry" }, { key: "playful", label: "Playful" }] as group (group.key)}
+            <div class="custom-pet-image-group">
+              <p class="custom-pet-image-group-label">{group.label}</p>
+              <div class="custom-pet-image-row">
+                <button
+                  type="button"
+                  class="manage-btn"
+                  onclick={() => pickEditPetImages(group.key)}
+                  disabled={editPetPicking !== null}
+                >
+                  {editPetPicking === group.key ? "Loading…" : "Add images…"}
+                </button>
+                {#each editPetDraft.images[group.key] as img, i (i)}
+                  <div class="custom-pet-thumb-wrap">
+                    <img class="custom-pet-preview" src={img} alt="" />
+                    <button
+                      type="button"
+                      class="custom-pet-thumb-remove"
+                      title="Remove"
+                      onclick={() => removeEditPetImage(group.key, i)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/each}
+          {#if editPetError}
+            <p class="settings-hint">{editPetError}</p>
+          {/if}
+        </div>
+
+        <div class="settings-section">
+          <p class="settings-label">Sayings</p>
+          <p class="settings-hint custom-pet-sayings-hint">
+            Optional — one line each. Left blank, a group just uses generic lines.
+          </p>
+          <label class="custom-pet-saying-label">
+            When idle
+            <textarea
+              class="manage-input custom-pet-saying-input"
+              rows="3"
+              bind:value={editPetDraft.sayings.idle}
+            ></textarea>
+          </label>
+          <label class="custom-pet-saying-label">
+            When pet
+            <textarea
+              class="manage-input custom-pet-saying-input"
+              rows="3"
+              bind:value={editPetDraft.sayings.pet}
+            ></textarea>
+          </label>
+          <label class="custom-pet-saying-label">
+            When fed
+            <textarea
+              class="manage-input custom-pet-saying-input"
+              rows="3"
+              bind:value={editPetDraft.sayings.fed}
+            ></textarea>
+          </label>
+          <label class="custom-pet-saying-label">
+            When played with
+            <textarea
+              class="manage-input custom-pet-saying-input"
+              rows="3"
+              bind:value={editPetDraft.sayings.played}
+            ></textarea>
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="modal-btn modal-delete manage-pet-delete"
+            onclick={() => requestDeletePet({ id: managingPetId, name: editPetDraft.name })}
+          >
+            Delete pet
+          </button>
+          <button type="button" class="modal-btn modal-cancel" onclick={cancelManagePet}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="modal-btn modal-confirm"
+            disabled={!editPetDraft.name.trim() || editPetDraft.images.idle.length === 0}
+            onclick={saveManagePet}
+          >
+            Save
+          </button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+{#if confirmDeletePet}
+  <div
+    class="modal-overlay"
+    role="button"
+    tabindex="-1"
+    onclick={cancelDeletePet}
+    onkeydown={handleDeletePetModalKeydown}
+  >
+    <div
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      use:focusOnMount
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={handleDeletePetModalKeydown}
+    >
+      <p class="modal-title">Delete {confirmDeletePet.name}?</p>
+      <p class="modal-body">
+        This pet and everything about it — its art and sayings — will be deleted permanently.
+        This can't be undone.
+      </p>
+      <div class="modal-actions">
+        <button type="button" class="modal-btn modal-cancel" onclick={cancelDeletePet}>
           Cancel
         </button>
-        <button type="button" class="modal-btn modal-confirm" onclick={saveSettings}>
-          Save
+        <button type="button" class="modal-btn modal-delete" onclick={confirmDeletePetNow}>
+          Delete
         </button>
       </div>
     </div>
@@ -2542,14 +2926,42 @@
                   bind:value={customPetName}
                   maxlength="24"
                 />
-                <div class="custom-pet-image-row">
-                  <button type="button" class="manage-btn" onclick={pickCustomPetImage} disabled={customPetPicking}>
-                    {customPetPicking ? "Loading…" : customPetImageDataUrl ? "Change image" : "Choose image…"}
-                  </button>
-                  {#if customPetImageDataUrl}
-                    <img class="custom-pet-preview" src={customPetImageDataUrl} alt="" />
-                  {/if}
-                </div>
+
+                <p class="settings-hint custom-pet-sayings-hint">
+                  Upload one or more images per mood — the pet picks a random
+                  frame from whichever mood is active, every few seconds.
+                  Idle is required; Hungry/Playful fall back to Idle's images
+                  if you skip them.
+                </p>
+
+                {#each [{ key: "idle", label: "Idle (required)" }, { key: "hungry", label: "Hungry" }, { key: "playful", label: "Playful" }] as group (group.key)}
+                  <div class="custom-pet-image-group">
+                    <p class="custom-pet-image-group-label">{group.label}</p>
+                    <div class="custom-pet-image-row">
+                      <button
+                        type="button"
+                        class="manage-btn"
+                        onclick={() => pickCustomPetImages(group.key)}
+                        disabled={customPetPicking !== null}
+                      >
+                        {customPetPicking === group.key ? "Loading…" : "Add images…"}
+                      </button>
+                      {#each customPetImageListFor(group.key) as img, i (i)}
+                        <div class="custom-pet-thumb-wrap">
+                          <img class="custom-pet-preview" src={img} alt="" />
+                          <button
+                            type="button"
+                            class="custom-pet-thumb-remove"
+                            title="Remove"
+                            onclick={() => removeCustomPetImage(group.key, i)}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/each}
                 {#if customPetError}
                   <p class="settings-hint">{customPetError}</p>
                 {/if}
@@ -2599,7 +3011,7 @@
                   <button
                     type="button"
                     class="manage-btn store-buy"
-                    disabled={!customPetName.trim() || !customPetImageDataUrl || credits < CUSTOM_PET_COST}
+                    disabled={!customPetName.trim() || customPetImagesIdle.length === 0 || credits < CUSTOM_PET_COST}
                     onclick={confirmCreateCustomPet}
                   >
                     Create — {CUSTOM_PET_COST}
@@ -2633,7 +3045,7 @@
        title and tags rows inside it add their own right padding so they
        still line up the same as before, clear of the scrollbar. */
     padding: 12px 0 24px 32px;
-    background: #1e1e1e;
+    background: var(--surface-main, #1e1e1e);
     color: #e6e6e6;
     box-sizing: border-box;
     /* UI scale (Settings panel slider): scoped to just this note-editing
@@ -2788,7 +3200,7 @@
     line-height: 1.3;
     border: none;
     background: none;
-    color: inherit;
+    color: var(--title-color, inherit);
     outline: none;
     padding: 0;
     margin: 0;
@@ -2982,7 +3394,8 @@
     margin: 6px 0;
     padding: 8px 10px;
     border-radius: 8px;
-    background: #262626;
+    border: 1px solid var(--checklist-border, transparent);
+    background: var(--surface-checklist, var(--accent-bg, #262626));
   }
 
   :global(.body-editor .checklist-block.dragging) {
@@ -3280,10 +3693,62 @@
     cursor: default;
   }
 
+  .modal-delete {
+    background: #ef4444;
+    color: white;
+    font-weight: 600;
+  }
+
+  .modal-delete:hover {
+    background: #dc2626;
+  }
+
   .settings-modal {
     width: 420px;
     max-height: min(640px, calc(100vh - 64px));
     overflow-y: auto;
+  }
+
+  /* The "Manage [pet]" page swaps in place of the rest of Settings, so it
+     gets noticeably more width/height to work with than cramming the same
+     form into a collapsed list row did. */
+  .settings-modal.manage-pet-view {
+    width: 520px;
+    max-height: min(720px, calc(100vh - 48px));
+  }
+
+  .manage-pet-page-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .manage-pet-back {
+    flex-shrink: 0;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    background: #1f1f1f;
+    color: #ccc;
+    font-size: 0.8rem;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+
+  .manage-pet-back:hover {
+    border-color: #555;
+    color: #e6e6e6;
+  }
+
+  .manage-pet-page-title {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .manage-pet-delete {
+    margin-right: auto;
   }
 
   .settings-section {
@@ -3682,10 +4147,53 @@
     gap: 8px;
   }
 
+  .custom-pet-image-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .custom-pet-image-group-label {
+    margin: 0;
+    font-size: 0.72rem;
+    color: #999;
+  }
+
   .custom-pet-image-row {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .custom-pet-thumb-wrap {
+    position: relative;
+    display: flex;
+  }
+
+  .custom-pet-thumb-remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1px solid #444;
+    background: #1e1e1e;
+    color: #ccc;
+    font-size: 0.7rem;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .custom-pet-thumb-remove:hover {
+    background: #c0392b;
+    border-color: #c0392b;
+    color: #fff;
   }
 
   .custom-pet-sayings-hint {

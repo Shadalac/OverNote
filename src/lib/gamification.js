@@ -17,32 +17,32 @@ export const CUSTOM_PET_COST = 150;
 // is not, since it's also used as the `data-theme` attribute value and as
 // the persisted "unlocked" key.
 //
-// Each base theme has a "+" upgrade right after it. A "+" isn't a brighter
-// shade of the same color — it's a deliberate hue swap into a completely
-// different, high-contrast neon-on-near-black combo, so picking it reads as
-// a different theme at a glance, not a tint (see the matching
-// :global(html[data-theme="...-plus"]) block in App.svelte for the actual
-// colors). A "+" theme's `requires` names the base theme's id: the Store
-// only lets you buy it once you already own that base theme.
+// Each base theme has a "+" upgrade right after it. A "+" stays in the same
+// color family as its base (same hue — still recognizably "that" theme),
+// but pushed hard: a true near-black background instead of a tinted dark
+// gray, and the accent cranked to its most saturated, glowing version (see
+// the matching :global(html[data-theme="...-plus"]) block in App.svelte for
+// the actual colors). A "+" theme's `requires` names the base theme's id:
+// the Store only lets you buy it once you already own that base theme.
 export const THEMES_CATALOG = [
   { id: "default", label: "Default", preview: "#0f8983", cost: 0 },
-  { id: "default-plus", label: "Default+", preview: "#ff0090", cost: 150, requires: "default" },
+  { id: "default-plus", label: "Default+", preview: "#00ffcc", cost: 150, requires: "default" },
   { id: "cyberpunk", label: "Cyberpunk", preview: "#ff2ec4", cost: 250 },
-  { id: "cyberpunk-plus", label: "Cyberpunk+", preview: "#d4ff00", cost: 150, requires: "cyberpunk" },
+  { id: "cyberpunk-plus", label: "Cyberpunk+", preview: "#ff00e0", cost: 150, requires: "cyberpunk" },
   { id: "neo-tokyo", label: "MookyGirl", preview: "#ff8fc7", cost: 250 },
-  { id: "neo-tokyo-plus", label: "MookyGirl+", preview: "#b400ff", cost: 150, requires: "neo-tokyo" },
+  { id: "neo-tokyo-plus", label: "MookyGirl+", preview: "#ff2fa6", cost: 150, requires: "neo-tokyo" },
   { id: "solarwave", label: "Solarwave", preview: "#ff7a3d", cost: 250 },
-  { id: "solarwave-plus", label: "Solarwave+", preview: "#7b2fff", cost: 150, requires: "solarwave" },
+  { id: "solarwave-plus", label: "Solarwave+", preview: "#ff4800", cost: 150, requires: "solarwave" },
   { id: "radslime", label: "Radslime", preview: "#39ff14", cost: 250 },
-  { id: "radslime-plus", label: "Radslime+", preview: "#ff0074", cost: 150, requires: "radslime" },
+  { id: "radslime-plus", label: "Radslime+", preview: "#caff00", cost: 150, requires: "radslime" },
   { id: "abyssal", label: "Abyssal", preview: "#2ea8ff", cost: 250 },
-  { id: "abyssal-plus", label: "Abyssal+", preview: "#ff5500", cost: 150, requires: "abyssal" },
-  { id: "bloodmoon", label: "Scarz", preview: "#ff3355", cost: 250 },
-  { id: "bloodmoon-plus", label: "Scarz+", preview: "#baff00", cost: 150, requires: "bloodmoon" },
+  { id: "abyssal-plus", label: "Abyssal+", preview: "#00d9ff", cost: 150, requires: "abyssal" },
+  { id: "bloodmoon", label: "Scarz", preview: "#ff1a3c", cost: 250 },
+  { id: "bloodmoon-plus", label: "Scarz+", preview: "#ff0033", cost: 150, requires: "bloodmoon" },
   { id: "amber-terminal", label: "Amber Terminal", preview: "#ffb000", cost: 250 },
-  { id: "amber-terminal-plus", label: "Amber Terminal+", preview: "#00fff2", cost: 150, requires: "amber-terminal" },
+  { id: "amber-terminal-plus", label: "Amber Terminal+", preview: "#ffcf00", cost: 150, requires: "amber-terminal" },
   { id: "manta", label: "Manta", preview: "#6fae8c", cost: 250 },
-  { id: "manta-plus", label: "Manta+", preview: "#ff6f91", cost: 150, requires: "manta" },
+  { id: "manta-plus", label: "Manta+", preview: "#00e6a0", cost: 150, requires: "manta" },
 ];
 
 // Custom pets (bought in the Store's "Create a custom pet" flow, named and

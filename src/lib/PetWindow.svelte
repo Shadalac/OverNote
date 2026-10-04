@@ -67,6 +67,60 @@
     return s[category]?.length ? s[category] : s.idle ?? [];
   }
 
+  // ---- Custom pet images: a mood ("idle"/"hungry"/"playful") plus a random
+  // frame within that mood's uploaded set, re-rolled every 2-7s so even a
+  // pet sitting there not being interacted with still looks alive. Feeding
+  // or playing switches the mood for a few seconds, then it drifts back to
+  // idle on its own. ----
+  let petMood = $state("idle");
+  let frameIndex = $state(0);
+  let frameTimer;
+  let moodRevertTimer;
+
+  function imagesFor(mood) {
+    const imgs = currentPet?.images;
+    if (!imgs) return [];
+    return imgs[mood]?.length ? imgs[mood] : imgs.idle ?? [];
+  }
+
+  let currentFrame = $derived.by(() => {
+    const frames = imagesFor(petMood);
+    if (frames.length === 0) return null;
+    return frames[frameIndex % frames.length];
+  });
+
+  function scheduleFrameChange() {
+    clearTimeout(frameTimer);
+    const frames = imagesFor(petMood);
+    if (frames.length <= 1) return; // nothing to cycle to
+    const delay = 2000 + Math.random() * 5000; // 2-7s
+    frameTimer = setTimeout(() => {
+      // Pick a different frame than the current one when there's a choice,
+      // so it reads as "changed" rather than occasionally reappearing as
+      // the same picture.
+      let next = Math.floor(Math.random() * frames.length);
+      if (frames.length > 1 && next === frameIndex % frames.length) {
+        next = (next + 1) % frames.length;
+      }
+      frameIndex = next;
+      scheduleFrameChange();
+    }, delay);
+  }
+
+  function setMood(mood, revertAfterMs = null) {
+    petMood = mood;
+    frameIndex = 0;
+    clearTimeout(moodRevertTimer);
+    if (revertAfterMs) {
+      moodRevertTimer = setTimeout(() => {
+        petMood = "idle";
+        frameIndex = 0;
+        scheduleFrameChange();
+      }, revertAfterMs);
+    }
+    scheduleFrameChange();
+  }
+
   function sayRandomLine(category = "idle") {
     const lines = linesFor(category);
     if (!lines || lines.length === 0) return;
@@ -103,9 +157,24 @@
     return () => clearTimeout(idleTimer);
   });
 
+  $effect(() => {
+    // Switching pets (via the arrows, a new purchase, etc.) resets back to
+    // the idle mood/frame rather than carrying over whatever the previous
+    // pet happened to be showing, and (re)starts frame cycling for
+    // whichever pet is now active.
+    currentPet;
+    clearTimeout(moodRevertTimer);
+    petMood = "idle";
+    frameIndex = 0;
+    scheduleFrameChange();
+    return () => clearTimeout(frameTimer);
+  });
+
   onDestroy(() => {
     clearTimeout(idleTimer);
     clearTimeout(speechTimer);
+    clearTimeout(frameTimer);
+    clearTimeout(moodRevertTimer);
   });
 
   // Shared by petting/feeding/playing — only the saying category and the
@@ -166,10 +235,12 @@
 
   function handleFeed() {
     interact("fed", "🍖");
+    setMood("hungry", 4000);
   }
 
   function handlePlay() {
     interact("played", "🧸");
+    setMood("playful", 4000);
   }
 </script>
 
@@ -201,6 +272,7 @@
           </button>
         {/if}
 
+        <div class="pet-frame-stack">
         <button
           type="button"
           class="pet-frame"
@@ -210,6 +282,12 @@
         >
           {#if currentPet.gifUrl}
             <img class="pet-gif" src={currentPet.gifUrl} alt={currentPet.name} />
+          {:else if currentPet.images}
+            <div class="custom-pet-frame-bob">
+              {#if currentFrame}
+                <img class="custom-pet-img" src={currentFrame} alt={currentPet.name} />
+              {/if}
+            </div>
           {:else if currentPet.kind === "orb"}
             <div class="pet-anim pet-orb pet-holo">
               <div class="orb-core"></div>
@@ -298,23 +376,51 @@
           {/each}
         </button>
 
-        <div class="pet-action-col">
-          <button
-            type="button"
-            class="pet-action-btn"
-            title={`Feed ${currentPet.name}`}
-            onclick={handleFeed}
-          >
-            🍖
-          </button>
-          <button
-            type="button"
-            class="pet-action-btn"
-            title={`Play with ${currentPet.name}`}
-            onclick={handlePlay}
-          >
-            🧸
-          </button>
+        <button
+          type="button"
+          class="pet-action-btn pet-action-feed"
+          title={`Feed ${currentPet.name}`}
+          onclick={handleFeed}
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path
+              d="M4 10h16a1 1 0 0 1 1 1c0 5-4 9-9 9s-9-4-9-9a1 1 0 0 1 1-1z"
+              fill="var(--accent)"
+              fill-opacity="0.35"
+              stroke="var(--accent-text)"
+              stroke-width="1.2"
+            />
+            <ellipse
+              cx="12" cy="10" rx="8" ry="2.4"
+              fill="var(--accent-text)"
+              fill-opacity="0.25"
+              stroke="var(--accent-text)"
+              stroke-width="1"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="pet-action-btn pet-action-play"
+          title={`Play with ${currentPet.name}`}
+          onclick={handlePlay}
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <circle
+              cx="12" cy="12" r="9"
+              fill="var(--accent)"
+              fill-opacity="0.3"
+              stroke="var(--accent-text)"
+              stroke-width="1.2"
+            />
+            <path
+              d="M4 9c4 3 12 3 16 0M4 15c4-3 12-3 16 0"
+              stroke="var(--accent-text)"
+              stroke-width="1"
+              fill="none"
+            />
+          </svg>
+        </button>
         </div>
 
         {#if ownedPets.length > 1}
@@ -344,6 +450,13 @@
     flex-direction: column;
     align-items: center;
     gap: 6px;
+    /* Scales the whole dock — toggle, frame, arrows, speech bubble, and
+       feed/play buttons together — anchored to the bottom-right corner it's
+       pinned to, so growing it expands up and to the left instead of
+       spilling off the window edge. Set from Settings' "Holo-Pet size"
+       slider via the --pet-scale custom property on <html>. */
+    transform: scale(var(--pet-scale, 1));
+    transform-origin: bottom right;
   }
 
   .pet-dock-toggle {
@@ -520,6 +633,27 @@
     object-fit: contain;
   }
 
+  /* Custom pets (user-uploaded images) don't get the holo glow filter —
+     it looks wrong on a real photo — but they still bob gently like every
+     other pet, so the frame reads as alive rather than a static picture. */
+  .custom-pet-frame-bob {
+    width: 60px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: bot-bob 2s ease-in-out infinite;
+  }
+
+  .custom-pet-img {
+    max-width: 60px;
+    max-height: 60px;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+  }
+
   .pet-sparkle {
     position: absolute;
     top: 50%;
@@ -542,20 +676,24 @@
     }
   }
 
-  .pet-action-col {
+  /* Wraps the frame button so the feed/play circles can be pinned to its
+     top-right/bottom-right corners (slightly overlapping the edge) instead
+     of sitting in their own column — matches the Holo-Pets layout mockup. */
+  .pet-frame-stack {
+    position: relative;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    flex-shrink: 0;
   }
 
   .pet-action-btn {
+    position: absolute;
+    right: -9px;
     width: 26px;
     height: 26px;
     flex-shrink: 0;
     border-radius: 50%;
     border: 1px solid #333;
     background: #1e1e1e;
-    font-size: 0.85rem;
     line-height: 1;
     cursor: pointer;
     display: flex;
@@ -564,8 +702,16 @@
     padding: 0;
   }
 
+  .pet-action-feed {
+    top: 2px;
+  }
+
+  .pet-action-play {
+    bottom: 2px;
+  }
+
   .pet-action-btn:hover {
-    border-color: #444;
+    border-color: var(--accent, #444);
     background: #262626;
   }
 

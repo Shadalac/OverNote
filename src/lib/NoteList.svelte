@@ -395,7 +395,7 @@
        the column's real height, so its own `ul` scrolls internally. */
     min-height: 0;
     border-right: 1px solid #2a2a2a;
-    background: #171717;
+    background: var(--surface-sidebar, #171717);
     color: #e6e6e6;
   }
 
@@ -508,7 +508,7 @@
   }
 
   ul::-webkit-scrollbar-track {
-    background: #171717;
+    background: var(--surface-sidebar, #171717);
   }
 
   ul::-webkit-scrollbar-thumb {
@@ -523,11 +523,11 @@
   li {
     display: flex;
     align-items: stretch;
-    border-bottom: 1px solid #232323;
+    border-bottom: 1px solid var(--sidebar-divider, #232323);
   }
 
   li.selected {
-    background: #232323;
+    background: var(--accent-bg, #232323);
   }
 
   li[draggable="true"] {
