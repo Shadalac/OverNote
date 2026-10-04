@@ -438,6 +438,17 @@
        scaling contained to the note content it's meant for. */
   }
 
+  /* "+" upgrade: NOT a brighter shade of the base theme — a deliberate hue
+     swap into a completely different, high-contrast neon-on-near-black
+     combo, so switching to it reads as a different theme at a glance. */
+  :global(html[data-theme="default-plus"]) {
+    --accent: #ff0090;
+    --accent-hover: #d6007a;
+    --accent-bg: #120014;
+    --accent-text: #ffd23f;
+    --accent-bg-2: #0a000c;
+  }
+
   :global(html[data-theme="cyberpunk"]) {
     --accent: #ff2ec4;
     --accent-hover: #d61aa3;
@@ -446,14 +457,12 @@
     --accent-bg-2: #1f0e2e;
   }
 
-  /* "+" upgrade: same identity, brighter/more saturated accent (the base
-     color becomes the hover shade), and a deeper, richer background. */
   :global(html[data-theme="cyberpunk-plus"]) {
-    --accent: #ff6df0;
-    --accent-hover: #ff2ec4;
-    --accent-bg: #3a1050;
-    --accent-text: #aefcff;
-    --accent-bg-2: #2a0c3d;
+    --accent: #d4ff00;
+    --accent-hover: #a8cc00;
+    --accent-bg: #050b14;
+    --accent-text: #00eaff;
+    --accent-bg-2: #030610;
   }
 
   :global(html[data-theme="neo-tokyo"]) {
@@ -465,11 +474,11 @@
   }
 
   :global(html[data-theme="neo-tokyo-plus"]) {
-    --accent: #ffb3dd;
-    --accent-hover: #ff8fc7;
-    --accent-bg: #1c3f3d;
-    --accent-text: #ffe9ab;
-    --accent-bg-2: #15332f;
+    --accent: #b400ff;
+    --accent-hover: #8e00cc;
+    --accent-bg: #0d1407;
+    --accent-text: #caff33;
+    --accent-bg-2: #080f04;
   }
 
   /* Warm sunset synthwave: orange accent, golden highlights. */
@@ -482,11 +491,11 @@
   }
 
   :global(html[data-theme="solarwave-plus"]) {
-    --accent: #ffa35c;
-    --accent-hover: #ff7a3d;
-    --accent-bg: #4a2816;
-    --accent-text: #ffe0a0;
-    --accent-bg-2: #391d11;
+    --accent: #7b2fff;
+    --accent-hover: #5e1fd6;
+    --accent-bg: #140a2e;
+    --accent-text: #2ff2ff;
+    --accent-bg-2: #0d0620;
   }
 
   /* Toxic/hacker green, like an old CRT full of nuclear slime. */
@@ -499,11 +508,11 @@
   }
 
   :global(html[data-theme="radslime-plus"]) {
-    --accent: #7bff5a;
-    --accent-hover: #39ff14;
-    --accent-bg: #163617;
-    --accent-text: #d9ffb8;
-    --accent-bg-2: #102810;
+    --accent: #ff0074;
+    --accent-hover: #cc005c;
+    --accent-bg: #0a0005;
+    --accent-text: #caff00;
+    --accent-bg-2: #060003;
   }
 
   /* Deep-sea bioluminescent blue. */
@@ -516,11 +525,11 @@
   }
 
   :global(html[data-theme="abyssal-plus"]) {
-    --accent: #6cc9ff;
-    --accent-hover: #2ea8ff;
-    --accent-bg: #123350;
-    --accent-text: #bdf0ff;
-    --accent-bg-2: #0d2740;
+    --accent: #ff5500;
+    --accent-hover: #cc4400;
+    --accent-bg: #01111f;
+    --accent-text: #ffcf6e;
+    --accent-bg-2: #000c16;
   }
 
   /* Gothic dark red/pink. */
@@ -533,11 +542,11 @@
   }
 
   :global(html[data-theme="bloodmoon-plus"]) {
-    --accent: #ff6d85;
-    --accent-hover: #ff3355;
-    --accent-bg: #3c131c;
-    --accent-text: #ffc2cc;
-    --accent-bg-2: #2b0f16;
+    --accent: #baff00;
+    --accent-hover: #93cc00;
+    --accent-bg: #14000a;
+    --accent-text: #ff2e6b;
+    --accent-bg-2: #0d0006;
   }
 
   /* Retro monochrome amber CRT terminal. */
@@ -550,11 +559,11 @@
   }
 
   :global(html[data-theme="amber-terminal-plus"]) {
-    --accent: #ffcf4d;
-    --accent-hover: #ffb000;
-    --accent-bg: #3a2808;
-    --accent-text: #ffe9a8;
-    --accent-bg-2: #2b1e06;
+    --accent: #00fff2;
+    --accent-hover: #00ccc2;
+    --accent-bg: #050505;
+    --accent-text: #ffee00;
+    --accent-bg-2: #000000;
   }
 
   /* Subtle, muted sage green — quieter than Radslime's neon green. */
@@ -567,11 +576,11 @@
   }
 
   :global(html[data-theme="manta-plus"]) {
-    --accent: #9ad6b7;
-    --accent-hover: #6fae8c;
-    --accent-bg: #1f3327;
-    --accent-text: #cdeedd;
-    --accent-bg-2: #17271e;
+    --accent: #ff6f91;
+    --accent-hover: #d65879;
+    --accent-bg: #140a24;
+    --accent-text: #8fe3ff;
+    --accent-bg-2: #0d0618;
   }
 
   :global(html, body) {

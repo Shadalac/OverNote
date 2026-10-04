@@ -46,6 +46,14 @@
   // it stays in sync with the Store, which locks/unlocks these same ids.
   const PALETTES = THEMES_CATALOG;
 
+  // Groups each base theme with its own "+" upgrade (if it has one) so the
+  // Settings picker can render them as paired swatches instead of one flat,
+  // undifferentiated row of 17 buttons.
+  const PALETTE_GROUPS = PALETTES.filter((p) => !p.requires).map((base) => ({
+    base,
+    plus: PALETTES.find((p) => p.requires === base.id) ?? null,
+  }));
+
   function loadTheme() {
     try {
       const saved = localStorage.getItem("overnote-theme");
@@ -2185,22 +2193,42 @@
 
       <div class="settings-section">
         <p class="settings-label">Color palette</p>
-        <div class="palette-row">
-          {#each PALETTES as p (p.id)}
-            <button
-              type="button"
-              class="palette-swatch"
-              class:active={pendingTheme === p.id}
-              class:locked={!unlockedThemes.includes(p.id)}
-              title={unlockedThemes.includes(p.id) ? "" : `Locked — ${p.cost} credits in the Store`}
-              onclick={() => selectPendingTheme(p.id)}
-            >
-              <span class="swatch-dot" style="background: {p.preview};"></span>
-              <span class="swatch-label">{p.label}</span>
-              {#if !unlockedThemes.includes(p.id)}
-                <span class="swatch-lock" aria-hidden="true">🔒</span>
-              {/if}
-            </button>
+        <div class="palette-groups">
+          {#each PALETTE_GROUPS as group (group.base.id)}
+            <div class="palette-group">
+              <p class="palette-group-label">{group.base.label}</p>
+              <div class="palette-group-swatches">
+                <button
+                  type="button"
+                  class="palette-swatch"
+                  class:active={pendingTheme === group.base.id}
+                  class:locked={!unlockedThemes.includes(group.base.id)}
+                  title={unlockedThemes.includes(group.base.id) ? "" : `Locked — ${group.base.cost} credits in the Store`}
+                  onclick={() => selectPendingTheme(group.base.id)}
+                >
+                  <span class="swatch-dot" style="background: {group.base.preview};"></span>
+                  {#if !unlockedThemes.includes(group.base.id)}
+                    <span class="swatch-lock" aria-hidden="true">🔒</span>
+                  {/if}
+                </button>
+                {#if group.plus}
+                  <button
+                    type="button"
+                    class="palette-swatch plus"
+                    class:active={pendingTheme === group.plus.id}
+                    class:locked={!unlockedThemes.includes(group.plus.id)}
+                    title={unlockedThemes.includes(group.plus.id) ? "" : `Locked — ${group.plus.cost} credits in the Store`}
+                    onclick={() => selectPendingTheme(group.plus.id)}
+                  >
+                    <span class="swatch-dot" style="background: {group.plus.preview};"></span>
+                    <span class="swatch-plus-badge" aria-hidden="true">+</span>
+                    {#if !unlockedThemes.includes(group.plus.id)}
+                      <span class="swatch-lock" aria-hidden="true">🔒</span>
+                    {/if}
+                  </button>
+                {/if}
+              </div>
+            </div>
           {/each}
         </div>
         {#if PALETTES.some((p) => !unlockedThemes.includes(p.id))}
@@ -3277,23 +3305,46 @@
     color: #777;
   }
 
-  .palette-row {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
+  .palette-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 10px;
   }
 
-  .palette-swatch {
+  .palette-group {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 6px;
-    padding: 10px 12px;
+    padding: 8px 6px 10px;
+    border-radius: 10px;
+    border: 1px solid #2c2c2c;
+    background: #181818;
+  }
+
+  .palette-group-label {
+    margin: 0;
+    font-size: 0.68rem;
+    color: #999;
+    text-align: center;
+    line-height: 1.2;
+  }
+
+  .palette-group-swatches {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .palette-swatch {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px;
     border-radius: 8px;
     border: 1px solid #3a3a3a;
     background: #1f1f1f;
-    color: #aaa;
-    font-size: 0.72rem;
     cursor: pointer;
   }
 
@@ -3304,7 +3355,6 @@
   .palette-swatch.active {
     border-color: var(--accent);
     background: var(--accent-bg);
-    color: var(--accent-text);
   }
 
   .palette-swatch.locked {
@@ -3317,8 +3367,35 @@
   }
 
   .swatch-lock {
-    font-size: 0.7rem;
+    position: absolute;
+    bottom: -4px;
+    right: -4px;
+    font-size: 0.65rem;
     line-height: 1;
+  }
+
+  .swatch-plus-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #2a2a2a;
+    border: 1px solid #555;
+    color: #ddd;
+    font-size: 0.6rem;
+    font-weight: 700;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .palette-swatch.plus.active .swatch-plus-badge {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-bg);
   }
 
   .swatch-dot {
