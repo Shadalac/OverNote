@@ -8,20 +8,55 @@ export const CHECKLIST_CREATE_CREDITS = 10;
 export const ITEM_COMPLETE_CREDITS = 5;
 export const PET_CREDITS = 1;
 
+// Buying a slot to create your own custom pet (name + uploaded image) — see
+// "Custom pets" below. Priced in the same range as the built-in pets.
+export const CUSTOM_PET_COST = 150;
+
 // id "default" always ships unlocked (cost is informational only — App
 // never charges for it). Renaming a label here is safe; renaming an `id`
 // is not, since it's also used as the `data-theme` attribute value and as
 // the persisted "unlocked" key.
+//
+// Each base theme has a "+" upgrade right after it — same identity, a
+// brighter/more saturated accent, and a deeper, richer background (see the
+// matching :global(html[data-theme="...-plus"]) block in App.svelte for the
+// actual colors). A "+" theme's `requires` names the base theme's id: the
+// Store only lets you buy it once you already own that base theme.
 export const THEMES_CATALOG = [
   { id: "default", label: "Default", preview: "#0f8983", cost: 0 },
   { id: "cyberpunk", label: "Cyberpunk", preview: "#ff2ec4", cost: 250 },
+  { id: "cyberpunk-plus", label: "Cyberpunk+", preview: "#ff6df0", cost: 150, requires: "cyberpunk" },
   { id: "neo-tokyo", label: "MookyGirl", preview: "#ff8fc7", cost: 250 },
+  { id: "neo-tokyo-plus", label: "MookyGirl+", preview: "#ffb3dd", cost: 150, requires: "neo-tokyo" },
   { id: "solarwave", label: "Solarwave", preview: "#ff7a3d", cost: 250 },
+  { id: "solarwave-plus", label: "Solarwave+", preview: "#ffa35c", cost: 150, requires: "solarwave" },
   { id: "radslime", label: "Radslime", preview: "#39ff14", cost: 250 },
+  { id: "radslime-plus", label: "Radslime+", preview: "#7bff5a", cost: 150, requires: "radslime" },
   { id: "abyssal", label: "Abyssal", preview: "#2ea8ff", cost: 250 },
+  { id: "abyssal-plus", label: "Abyssal+", preview: "#6cc9ff", cost: 150, requires: "abyssal" },
   { id: "bloodmoon", label: "Scarz", preview: "#ff3355", cost: 250 },
+  { id: "bloodmoon-plus", label: "Scarz+", preview: "#ff6d85", cost: 150, requires: "bloodmoon" },
   { id: "amber-terminal", label: "Amber Terminal", preview: "#ffb000", cost: 250 },
+  { id: "amber-terminal-plus", label: "Amber Terminal+", preview: "#ffcf4d", cost: 150, requires: "amber-terminal" },
   { id: "manta", label: "Manta", preview: "#6fae8c", cost: 250 },
+  { id: "manta-plus", label: "Manta+", preview: "#9ad6b7", cost: 150, requires: "manta" },
+];
+
+// Custom pets (bought in the Store's "Create a custom pet" flow, named and
+// given a user-uploaded image) aren't in this static catalog — each one is
+// its own entry, persisted in appState's `customPets` array (App.svelte),
+// built with this same generic voice since the user doesn't write one.
+export const CUSTOM_PET_SAYINGS = [
+  "hi!!",
+  "*wags*",
+  "hru?",
+  ":)",
+  "mlem",
+  "*nuzzles*",
+  "hey hey!",
+  "<3",
+  "*happy noises*",
+  "pet me again?",
 ];
 
 // `gifUrl` is left null for every built-in pet — each renders as a small

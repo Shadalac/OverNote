@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
-  import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
   import { invoke } from "@tauri-apps/api/core";
   import findIcon from "../assets/icons/find.png";
   import checklistIcon from "../assets/icons/checklist.png";
@@ -11,6 +11,7 @@
     PETS_CATALOG,
     CHECKLIST_CREATE_CREDITS,
     ITEM_COMPLETE_CREDITS,
+    CUSTOM_PET_COST,
   } from "./gamification.js";
 
   let {
@@ -26,9 +27,11 @@
     credits = 0,
     unlockedThemes = ["default"],
     ownedPets = [],
+    customPets = [],
     onEarnCredits,
     onBuyTheme,
     onBuyPet,
+    onCreateCustomPet,
   } = $props();
 
   // ---- Settings: color palette + UI scale ----------------------------------
@@ -214,14 +217,30 @@
   }
 
   // ---- Store: spend credits on themes and pets ----------------------------
+  //
+  // The Store is one modal with its own tiny "pack" navigation inside it:
+  // a home screen of pack tiles (Themes / Themes+ / Pets), each opening
+  // into that pack's list with a back arrow to return — storeView tracks
+  // which screen is showing.
   let storeOpen = $state(false);
+  let storeView = $state("home"); // "home" | "themes" | "themes-plus" | "pets"
 
   function openStore() {
     storeOpen = true;
+    storeView = "home";
   }
 
   function closeStore() {
     storeOpen = false;
+  }
+
+  function openStorePack(pack) {
+    storeView = pack;
+  }
+
+  function storeBack() {
+    storeView = "home";
+    cancelCreateCustomPet();
   }
 
   function handleStoreModalKeydown(event) {
@@ -231,6 +250,8 @@
   function buyTheme(themeId) {
     const theme = THEMES_CATALOG.find((t) => t.id === themeId);
     if (!theme || unlockedThemes.includes(themeId) || credits < theme.cost) return;
+    // A "+" theme is an upgrade — only buyable once its base theme is owned.
+    if (theme.requires && !unlockedThemes.includes(theme.requires)) return;
     onBuyTheme?.(themeId);
   }
 
@@ -238,6 +259,101 @@
     const pet = PETS_CATALOG.find((p) => p.id === petId);
     if (!pet || ownedPets.includes(petId) || credits < pet.cost) return;
     onBuyPet?.(petId);
+  }
+
+  // ---- Store: "Create a custom pet" (name + your own uploaded image) ------
+  let creatingCustomPet = $state(false);
+  let customPetName = $state("");
+  let customPetImageDataUrl = $state(null); // resized, ready to submit
+  let customPetPicking = $state(false); // while the file dialog/read is in flight
+  let customPetError = $state(null);
+  // Four saying groups, each typed as one line per saying — left blank,
+  // a group falls back to the built-in generic lines (see App.svelte's
+  // handleCreateCustomPet) rather than that pet staying silent on that
+  // occasion.
+  let customPetSayingsIdle = $state("");
+  let customPetSayingsPet = $state("");
+  let customPetSayingsFed = $state("");
+  let customPetSayingsPlayed = $state("");
+
+  function parseSayingLines(text) {
+    return text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  function startCreateCustomPet() {
+    creatingCustomPet = true;
+    customPetName = "";
+    customPetImageDataUrl = null;
+    customPetError = null;
+    customPetSayingsIdle = "";
+    customPetSayingsPet = "";
+    customPetSayingsFed = "";
+    customPetSayingsPlayed = "";
+  }
+
+  function cancelCreateCustomPet() {
+    creatingCustomPet = false;
+  }
+
+  // Downscales a data URL to fit within maxSize×maxSize (preserving aspect
+  // ratio) via an offscreen canvas — a user's photo straight off their
+  // phone can be several megabytes, and this is stored as a plain text
+  // column in the database, so keeping it small matters.
+  function resizeImageDataUrl(dataUrl, maxSize) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxSize) {
+          height = Math.round((height * maxSize) / width);
+          width = maxSize;
+        } else if (height >= width && height > maxSize) {
+          width = Math.round((width * maxSize) / height);
+          height = maxSize;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.onerror = () => reject(new Error("image failed to load"));
+      img.src = dataUrl;
+    });
+  }
+
+  async function pickCustomPetImage() {
+    customPetError = null;
+    try {
+      const path = await openDialog({
+        multiple: false,
+        filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+      });
+      if (!path) return;
+      customPetPicking = true;
+      const dataUrl = await invoke("read_image_as_data_url", { path });
+      customPetImageDataUrl = await resizeImageDataUrl(dataUrl, 256);
+    } catch {
+      customPetError = "Couldn't load that image.";
+    } finally {
+      customPetPicking = false;
+    }
+  }
+
+  function confirmCreateCustomPet() {
+    const name = customPetName.trim();
+    if (!name || !customPetImageDataUrl || credits < CUSTOM_PET_COST) return;
+    const sayings = {
+      idle: parseSayingLines(customPetSayingsIdle),
+      pet: parseSayingLines(customPetSayingsPet),
+      fed: parseSayingLines(customPetSayingsFed),
+      played: parseSayingLines(customPetSayingsPlayed),
+    };
+    onCreateCustomPet?.(name, customPetImageDataUrl, sayings);
+    creatingCustomPet = false;
   }
 
   function startTagEdit(tag) {
@@ -2279,52 +2395,193 @@
                onclick={() => onEarnCredits?.(1000)}>+1000 (debug)</button> -->
       </p>
 
-      <div class="settings-section">
-        <p class="settings-label">Themes</p>
-        <ul class="store-list">
-          {#each THEMES_CATALOG.filter((t) => t.cost > 0) as t (t.id)}
-            <li class="store-row">
-              <span class="swatch-dot" style="background: {t.preview};"></span>
-              <span class="manage-name">{t.label}</span>
-              {#if unlockedThemes.includes(t.id)}
-                <span class="store-owned">Unlocked</span>
-              {:else}
-                <button
-                  type="button"
-                  class="manage-btn store-buy"
-                  disabled={credits < t.cost}
-                  onclick={() => buyTheme(t.id)}
-                >
-                  Buy — {t.cost}
-                </button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </div>
+      {#if storeView === "home"}
+        <div class="store-packs">
+          <button type="button" class="store-pack-tile" onclick={() => openStorePack("themes")}>
+            <span class="store-pack-label">Themes</span>
+            <span class="store-pack-sub">
+              {unlockedThemes.filter((id) => !id.endsWith("-plus") && id !== "default").length}/{THEMES_CATALOG.filter(
+                (t) => t.cost > 0 && !t.requires
+              ).length} unlocked
+            </span>
+          </button>
+          <button type="button" class="store-pack-tile" onclick={() => openStorePack("themes-plus")}>
+            <span class="store-pack-label">Themes+</span>
+            <span class="store-pack-sub">Upgrades for themes you own</span>
+          </button>
+          <button type="button" class="store-pack-tile" onclick={() => openStorePack("pets")}>
+            <span class="store-pack-label">Pets</span>
+            <span class="store-pack-sub">{ownedPets.length + customPets.length} owned</span>
+          </button>
+        </div>
+      {:else}
+        <div class="store-pack-header">
+          <button type="button" class="store-back-btn" title="Back" onclick={storeBack}>←</button>
+          <p class="settings-label store-pack-title">
+            {storeView === "themes" ? "Themes" : storeView === "themes-plus" ? "Themes+" : "Pets"}
+          </p>
+        </div>
 
-      <div class="settings-section">
-        <p class="settings-label">Holo-Pets</p>
-        <ul class="store-list">
-          {#each PETS_CATALOG as p (p.id)}
-            <li class="store-row">
-              <span class="manage-name">{p.name} <span class="store-blurb">— {p.blurb}</span></span>
-              {#if ownedPets.includes(p.id)}
+        {#if storeView === "themes"}
+          <ul class="store-list">
+            {#each THEMES_CATALOG.filter((t) => t.cost > 0 && !t.requires) as t (t.id)}
+              <li class="store-row">
+                <span class="swatch-dot" style="background: {t.preview};"></span>
+                <span class="manage-name">{t.label}</span>
+                {#if unlockedThemes.includes(t.id)}
+                  <span class="store-owned">Unlocked</span>
+                {:else}
+                  <button
+                    type="button"
+                    class="manage-btn store-buy"
+                    disabled={credits < t.cost}
+                    onclick={() => buyTheme(t.id)}
+                  >
+                    Buy — {t.cost}
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {:else if storeView === "themes-plus"}
+          <ul class="store-list">
+            {#each THEMES_CATALOG.filter((t) => t.requires) as t (t.id)}
+              <li class="store-row">
+                <span class="swatch-dot" style="background: {t.preview};"></span>
+                <span class="manage-name">{t.label}</span>
+                {#if unlockedThemes.includes(t.id)}
+                  <span class="store-owned">Unlocked</span>
+                {:else if !unlockedThemes.includes(t.requires)}
+                  <span class="store-locked-hint">
+                    Owns {THEMES_CATALOG.find((b) => b.id === t.requires)?.label} first
+                  </span>
+                {:else}
+                  <button
+                    type="button"
+                    class="manage-btn store-buy"
+                    disabled={credits < t.cost}
+                    onclick={() => buyTheme(t.id)}
+                  >
+                    Buy — {t.cost}
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {:else if storeView === "pets"}
+          <ul class="store-list">
+            {#each PETS_CATALOG as p (p.id)}
+              <li class="store-row">
+                <span class="manage-name">{p.name} <span class="store-blurb">— {p.blurb}</span></span>
+                {#if ownedPets.includes(p.id)}
+                  <span class="store-owned">Owned</span>
+                {:else}
+                  <button
+                    type="button"
+                    class="manage-btn store-buy"
+                    disabled={credits < p.cost}
+                    onclick={() => buyPet(p.id)}
+                  >
+                    Buy — {p.cost}
+                  </button>
+                {/if}
+              </li>
+            {/each}
+            {#each customPets as p (p.id)}
+              <li class="store-row">
+                <span class="manage-name">{p.name} <span class="store-blurb">— your custom pet</span></span>
                 <span class="store-owned">Owned</span>
-              {:else}
-                <button
-                  type="button"
-                  class="manage-btn store-buy"
-                  disabled={credits < p.cost}
-                  onclick={() => buyPet(p.id)}
-                >
-                  Buy — {p.cost}
-                </button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </div>
+              </li>
+            {/each}
+          </ul>
+
+          <div class="store-custom-pet">
+            {#if !creatingCustomPet}
+              <button
+                type="button"
+                class="manage-btn store-buy store-custom-pet-start"
+                disabled={credits < CUSTOM_PET_COST}
+                onclick={startCreateCustomPet}
+              >
+                Create a custom pet — {CUSTOM_PET_COST}
+              </button>
+            {:else}
+              <div class="custom-pet-form">
+                <input
+                  type="text"
+                  class="manage-input"
+                  placeholder="Pet name"
+                  bind:value={customPetName}
+                  maxlength="24"
+                />
+                <div class="custom-pet-image-row">
+                  <button type="button" class="manage-btn" onclick={pickCustomPetImage} disabled={customPetPicking}>
+                    {customPetPicking ? "Loading…" : customPetImageDataUrl ? "Change image" : "Choose image…"}
+                  </button>
+                  {#if customPetImageDataUrl}
+                    <img class="custom-pet-preview" src={customPetImageDataUrl} alt="" />
+                  {/if}
+                </div>
+                {#if customPetError}
+                  <p class="settings-hint">{customPetError}</p>
+                {/if}
+
+                <p class="settings-hint custom-pet-sayings-hint">
+                  Optional — one line each. Left blank, a group just uses generic lines.
+                </p>
+                <label class="custom-pet-saying-label">
+                  When idle
+                  <textarea
+                    class="manage-input custom-pet-saying-input"
+                    rows="2"
+                    placeholder="zzz...&#10;*stares*"
+                    bind:value={customPetSayingsIdle}
+                  ></textarea>
+                </label>
+                <label class="custom-pet-saying-label">
+                  When pet
+                  <textarea
+                    class="manage-input custom-pet-saying-input"
+                    rows="2"
+                    placeholder="hehe~&#10;that's the spot"
+                    bind:value={customPetSayingsPet}
+                  ></textarea>
+                </label>
+                <label class="custom-pet-saying-label">
+                  When fed
+                  <textarea
+                    class="manage-input custom-pet-saying-input"
+                    rows="2"
+                    placeholder="yum!&#10;more please?"
+                    bind:value={customPetSayingsFed}
+                  ></textarea>
+                </label>
+                <label class="custom-pet-saying-label">
+                  When played with
+                  <textarea
+                    class="manage-input custom-pet-saying-input"
+                    rows="2"
+                    placeholder="wheee!&#10;again again!"
+                    bind:value={customPetSayingsPlayed}
+                  ></textarea>
+                </label>
+
+                <div class="custom-pet-actions">
+                  <button type="button" class="manage-btn" onclick={cancelCreateCustomPet}>Cancel</button>
+                  <button
+                    type="button"
+                    class="manage-btn store-buy"
+                    disabled={!customPetName.trim() || !customPetImageDataUrl || credits < CUSTOM_PET_COST}
+                    onclick={confirmCreateCustomPet}
+                  >
+                    Create — {CUSTOM_PET_COST}
+                  </button>
+                </div>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      {/if}
 
       <div class="modal-actions">
         <button type="button" class="modal-btn modal-confirm" onclick={closeStore}>
@@ -3260,6 +3517,131 @@
   .store-buy:disabled {
     opacity: 0.45;
     cursor: not-allowed;
+  }
+
+  .store-packs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .store-pack-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 10px 14px;
+    background: #262626;
+    color: #e6e6e6;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .store-pack-tile:hover {
+    background: #2f2f2f;
+  }
+
+  .store-pack-label {
+    font-size: 0.9rem;
+    font-weight: 700;
+  }
+
+  .store-pack-sub {
+    font-size: 0.75rem;
+    color: #999;
+  }
+
+  .store-pack-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .store-back-btn {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: #262626;
+    color: #ccc;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .store-back-btn:hover {
+    background: #2f2f2f;
+    color: #fff;
+  }
+
+  .store-pack-title {
+    margin: 0;
+  }
+
+  .store-locked-hint {
+    font-size: 0.72rem;
+    color: #777;
+    white-space: nowrap;
+  }
+
+  .store-custom-pet {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #2a2a2a;
+  }
+
+  .store-custom-pet-start {
+    width: 100%;
+  }
+
+  .custom-pet-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .custom-pet-image-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .custom-pet-sayings-hint {
+    margin: 4px 0 0;
+  }
+
+  .custom-pet-saying-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.75rem;
+    color: #999;
+  }
+
+  .custom-pet-saying-input {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    font-family: inherit;
+  }
+
+  .custom-pet-preview {
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    object-fit: cover;
+    border: 1px solid #3a3a3a;
+  }
+
+  .custom-pet-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
   }
 
   .undo-toast {

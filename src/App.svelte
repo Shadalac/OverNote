@@ -22,7 +22,7 @@
     setNotePinned,
     reorderPinnedNotes,
   } from "./lib/db.js";
-  import { THEMES_CATALOG, PETS_CATALOG } from "./lib/gamification.js";
+  import { THEMES_CATALOG, PETS_CATALOG, CUSTOM_PET_COST, CUSTOM_PET_SAYINGS } from "./lib/gamification.js";
 
   let notes = $state([]);
   let templates = $state([]);
@@ -70,13 +70,16 @@
     // so the same one is still showing after a restart.
     activePetId: null,
     petsWindowVisible: true,
+    customPets: [],
   });
 
   // The Store/Settings UI wants full catalog entries (name, cost, art), not
-  // just the bare ids persisted in appState.
-  let ownedPetEntries = $derived(
-    PETS_CATALOG.filter((p) => appState.ownedPets.includes(p.id))
-  );
+  // just the bare ids persisted in appState — plus any custom pets, which
+  // are already stored as full entries (no catalog to look them up in).
+  let ownedPetEntries = $derived([
+    ...PETS_CATALOG.filter((p) => appState.ownedPets.includes(p.id)),
+    ...appState.customPets,
+  ]);
 
   // ---- Auto-update -------------------------------------------------------
   //
@@ -146,6 +149,9 @@
   function handleBuyTheme(themeId) {
     const theme = THEMES_CATALOG.find((t) => t.id === themeId);
     if (!theme || appState.unlockedThemes.includes(themeId)) return;
+    // A "+" theme is an upgrade — it can only be bought once its base
+    // theme is already owned.
+    if (theme.requires && !appState.unlockedThemes.includes(theme.requires)) return;
     if (appState.credits < theme.cost) return;
     persistAppState({
       credits: appState.credits - theme.cost,
@@ -163,6 +169,37 @@
       // A newly bought pet shows up right away rather than needing a
       // separate step to reveal it.
       activePetId: petId,
+    });
+  }
+
+  // The Store's "Create a custom pet" flow — `image` is already a
+  // "data:...;base64,..." URL by the time it gets here (NoteEditor reads
+  // and downsizes the user's chosen file before calling this). Each
+  // purchase makes a brand-new pet, so this can be bought repeatedly.
+  // `sayings` is { idle, pet, fed, played } arrays the user typed in the
+  // Store — any group left empty falls back to the generic lines rather
+  // than that pet staying silent on that occasion.
+  function handleCreateCustomPet(name, image, sayings) {
+    const trimmedName = name.trim();
+    if (!trimmedName || !image || appState.credits < CUSTOM_PET_COST) return;
+    const id = `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const pet = {
+      id,
+      name: trimmedName,
+      gifUrl: image,
+      kind: "custom",
+      blurb: "Your custom pet.",
+      sayings: {
+        idle: sayings?.idle?.length ? sayings.idle : CUSTOM_PET_SAYINGS,
+        pet: sayings?.pet?.length ? sayings.pet : CUSTOM_PET_SAYINGS,
+        fed: sayings?.fed?.length ? sayings.fed : CUSTOM_PET_SAYINGS,
+        played: sayings?.played?.length ? sayings.played : CUSTOM_PET_SAYINGS,
+      },
+    };
+    persistAppState({
+      credits: appState.credits - CUSTOM_PET_COST,
+      customPets: [...appState.customPets, pet],
+      activePetId: id,
     });
   }
 
@@ -334,9 +371,11 @@
               credits={appState.credits}
               unlockedThemes={appState.unlockedThemes}
               ownedPets={appState.ownedPets}
+              customPets={appState.customPets}
               onEarnCredits={handleEarnCredits}
               onBuyTheme={handleBuyTheme}
               onBuyPet={handleBuyPet}
+              onCreateCustomPet={handleCreateCustomPet}
             />
           {/key}
         {:else}
@@ -407,12 +446,30 @@
     --accent-bg-2: #1f0e2e;
   }
 
+  /* "+" upgrade: same identity, brighter/more saturated accent (the base
+     color becomes the hover shade), and a deeper, richer background. */
+  :global(html[data-theme="cyberpunk-plus"]) {
+    --accent: #ff6df0;
+    --accent-hover: #ff2ec4;
+    --accent-bg: #3a1050;
+    --accent-text: #aefcff;
+    --accent-bg-2: #2a0c3d;
+  }
+
   :global(html[data-theme="neo-tokyo"]) {
     --accent: #ff8fc7;
     --accent-hover: #e572ac;
     --accent-bg: #123332;
     --accent-text: #f5d98b;
     --accent-bg-2: #0f2b2a;
+  }
+
+  :global(html[data-theme="neo-tokyo-plus"]) {
+    --accent: #ffb3dd;
+    --accent-hover: #ff8fc7;
+    --accent-bg: #1c3f3d;
+    --accent-text: #ffe9ab;
+    --accent-bg-2: #15332f;
   }
 
   /* Warm sunset synthwave: orange accent, golden highlights. */
@@ -424,6 +481,14 @@
     --accent-bg-2: #2e170d;
   }
 
+  :global(html[data-theme="solarwave-plus"]) {
+    --accent: #ffa35c;
+    --accent-hover: #ff7a3d;
+    --accent-bg: #4a2816;
+    --accent-text: #ffe0a0;
+    --accent-bg-2: #391d11;
+  }
+
   /* Toxic/hacker green, like an old CRT full of nuclear slime. */
   :global(html[data-theme="radslime"]) {
     --accent: #39ff14;
@@ -431,6 +496,14 @@
     --accent-bg: #10240d;
     --accent-text: #baff8f;
     --accent-bg-2: #0c1c09;
+  }
+
+  :global(html[data-theme="radslime-plus"]) {
+    --accent: #7bff5a;
+    --accent-hover: #39ff14;
+    --accent-bg: #163617;
+    --accent-text: #d9ffb8;
+    --accent-bg-2: #102810;
   }
 
   /* Deep-sea bioluminescent blue. */
@@ -442,6 +515,14 @@
     --accent-bg-2: #091c2c;
   }
 
+  :global(html[data-theme="abyssal-plus"]) {
+    --accent: #6cc9ff;
+    --accent-hover: #2ea8ff;
+    --accent-bg: #123350;
+    --accent-text: #bdf0ff;
+    --accent-bg-2: #0d2740;
+  }
+
   /* Gothic dark red/pink. */
   :global(html[data-theme="bloodmoon"]) {
     --accent: #ff3355;
@@ -449,6 +530,14 @@
     --accent-bg: #2a0d14;
     --accent-text: #ff9baa;
     --accent-bg-2: #1f0a0f;
+  }
+
+  :global(html[data-theme="bloodmoon-plus"]) {
+    --accent: #ff6d85;
+    --accent-hover: #ff3355;
+    --accent-bg: #3c131c;
+    --accent-text: #ffc2cc;
+    --accent-bg-2: #2b0f16;
   }
 
   /* Retro monochrome amber CRT terminal. */
@@ -460,6 +549,14 @@
     --accent-bg-2: #201703;
   }
 
+  :global(html[data-theme="amber-terminal-plus"]) {
+    --accent: #ffcf4d;
+    --accent-hover: #ffb000;
+    --accent-bg: #3a2808;
+    --accent-text: #ffe9a8;
+    --accent-bg-2: #2b1e06;
+  }
+
   /* Subtle, muted sage green — quieter than Radslime's neon green. */
   :global(html[data-theme="manta"]) {
     --accent: #6fae8c;
@@ -467,6 +564,14 @@
     --accent-bg: #16241d;
     --accent-text: #a8d9bf;
     --accent-bg-2: #101b16;
+  }
+
+  :global(html[data-theme="manta-plus"]) {
+    --accent: #9ad6b7;
+    --accent-hover: #6fae8c;
+    --accent-bg: #1f3327;
+    --accent-text: #cdeedd;
+    --accent-bg-2: #17271e;
   }
 
   :global(html, body) {

@@ -8,8 +8,10 @@
   //
   // Only one pet shows at a time, in its own square frame — left/right
   // arrows switch which owned pet is active when you own more than one.
-  // Clicking the pet "pets" it: a little bounce, a sparkle burst, a couple
-  // of hearts drifting up, and a small credit (see handlePet below).
+  // Clicking the pet pets it; the 🍖/🧸 buttons feed it or play with it.
+  // All three do the same thing underneath — a little bounce, a sparkle
+  // burst, a floating emoji, and a small credit (see interact() below) —
+  // just with a different saying category and floating emoji each.
   //
   // Each pet is drawn as a small hand-built CSS/SVG animation by default
   // (fully offline, zero bundled assets). A pet whose catalog entry has a
@@ -40,24 +42,33 @@
     speech = "";
   }
 
-  // ---- Petting: a bounce on the frame, plus hearts + sparkles that spawn
-  // and remove themselves once their animation finishes. Spamming this is
-  // fine on purpose — every single pet earns its credit, no cooldown. ----
+  // ---- Petting/feeding/playing: a bounce on the frame, plus floaters +
+  // sparkles that spawn and remove themselves once their animation
+  // finishes. Spamming any of these is fine on purpose — every single
+  // interaction earns its credit, no cooldown. ----
   let petting = $state(false);
-  let hearts = $state([]);
+  let floaters = $state([]); // {id, emoji, dx, delay} — 💗 when pet, 🍖 when fed, 🧸 when played with
   let sparkles = $state([]);
   let creditPops = $state([]);
   let fxSeq = 0;
 
-  // What the pet is currently saying, picked at random from its own
-  // `sayings` list in gamification.js each time it's petted. A fresh pet
-  // replaces whatever's showing and resets the auto-hide timer, so rapid
-  // petting just keeps swapping in a new line rather than stacking bubbles.
+  // What the pet is currently saying. `currentPet.sayings` is either a
+  // flat array (every built-in pet — the same lines work for any
+  // occasion) or, for a custom pet, an object of { idle, pet, fed, played }
+  // arrays the user wrote themselves. A category with nothing written for
+  // it falls back to that pet's "idle" lines rather than staying silent.
   let speech = $state("");
   let speechTimer;
 
-  function sayRandomLine() {
-    const lines = currentPet?.sayings;
+  function linesFor(category) {
+    const s = currentPet?.sayings;
+    if (!s) return [];
+    if (Array.isArray(s)) return s;
+    return s[category]?.length ? s[category] : s.idle ?? [];
+  }
+
+  function sayRandomLine(category = "idle") {
+    const lines = linesFor(category);
     if (!lines || lines.length === 0) return;
     speech = lines[Math.floor(Math.random() * lines.length)];
     clearTimeout(speechTimer);
@@ -67,10 +78,10 @@
   }
 
   // ---- Idle chatter: pets say something on their own now and then, not
-  // just when petted, so the frame feels alive even when you're not
-  // clicking on it. Re-armed on a new random delay after every line (its
-  // own or one triggered by a pet), and restarted whenever the active pet
-  // or the frame's visibility changes.
+  // just when interacted with, so the frame feels alive even when you're
+  // not clicking on it. Re-armed on a new random delay after every line
+  // (its own or one triggered by petting/feeding/playing), and restarted
+  // whenever the active pet or the frame's visibility changes.
   let idleTimer;
 
   function scheduleIdleSpeech() {
@@ -78,7 +89,7 @@
     if (!currentPet || !windowVisible) return;
     const delay = 9000 + Math.random() * 14000; // ~9-23s
     idleTimer = setTimeout(() => {
-      sayRandomLine();
+      sayRandomLine("idle");
       scheduleIdleSpeech();
     }, delay);
   }
@@ -97,7 +108,9 @@
     clearTimeout(speechTimer);
   });
 
-  function handlePet() {
+  // Shared by petting/feeding/playing — only the saying category and the
+  // floating emoji differ between them.
+  function interact(category, emoji) {
     if (!currentPet) return;
 
     // Restart the bounce animation even on a rapid re-click: toggling the
@@ -123,18 +136,18 @@
       creditPops = creditPops.filter((p) => p.id !== popId);
     }, 850);
 
-    sayRandomLine();
-    // A manual pet counts as chatter too — push the next idle line back out
-    // so it doesn't immediately step on the one that was just triggered.
+    sayRandomLine(category);
+    // A manual interaction counts as chatter too — push the next idle line
+    // back out so it doesn't immediately step on the one just triggered.
     scheduleIdleSpeech();
 
     for (let i = 0; i < 2; i++) {
       const id = ++fxSeq;
-      const heart = { id, dx: Math.round(Math.random() * 30 - 15), delay: i * 120 };
-      hearts = [...hearts, heart];
+      const floater = { id, emoji, dx: Math.round(Math.random() * 30 - 15), delay: i * 120 };
+      floaters = [...floaters, floater];
       setTimeout(() => {
-        hearts = hearts.filter((h) => h.id !== id);
-      }, 950 + heart.delay);
+        floaters = floaters.filter((f) => f.id !== id);
+      }, 950 + floater.delay);
     }
     for (let i = 0; i < 4; i++) {
       const id = ++fxSeq;
@@ -145,6 +158,18 @@
         sparkles = sparkles.filter((s) => s.id !== id);
       }, 550);
     }
+  }
+
+  function handlePet() {
+    interact("pet", "💗");
+  }
+
+  function handleFeed() {
+    interact("fed", "🍖");
+  }
+
+  function handlePlay() {
+    interact("played", "🧸");
   }
 </script>
 
@@ -261,17 +286,36 @@
               aria-hidden="true">✦</span
             >
           {/each}
-          {#each hearts as h (h.id)}
+          {#each floaters as f (f.id)}
             <span
-              class="pet-heart"
-              style="--dx: {h.dx}px; animation-delay: {h.delay}ms;"
-              aria-hidden="true">💗</span
+              class="pet-floater"
+              style="--dx: {f.dx}px; animation-delay: {f.delay}ms;"
+              aria-hidden="true">{f.emoji}</span
             >
           {/each}
           {#each creditPops as p (p.id)}
             <span class="pet-credit-pop" aria-hidden="true">+{PET_CREDITS}</span>
           {/each}
         </button>
+
+        <div class="pet-action-col">
+          <button
+            type="button"
+            class="pet-action-btn"
+            title={`Feed ${currentPet.name}`}
+            onclick={handleFeed}
+          >
+            🍖
+          </button>
+          <button
+            type="button"
+            class="pet-action-btn"
+            title={`Play with ${currentPet.name}`}
+            onclick={handlePlay}
+          >
+            🧸
+          </button>
+        </div>
 
         {#if ownedPets.length > 1}
           <button
@@ -498,7 +542,34 @@
     }
   }
 
-  .pet-heart {
+  .pet-action-col {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pet-action-btn {
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 1px solid #333;
+    background: #1e1e1e;
+    font-size: 0.85rem;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .pet-action-btn:hover {
+    border-color: #444;
+    background: #262626;
+  }
+
+  .pet-floater {
     position: absolute;
     top: 50%;
     left: 50%;

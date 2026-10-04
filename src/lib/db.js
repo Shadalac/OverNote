@@ -214,6 +214,12 @@ const APP_STATE_DEFAULTS = {
   // the UI just falls back to the first owned pet).
   activePetId: null,
   petsWindowVisible: true,
+  // User-created pets (name + their own uploaded image), bought via the
+  // Store's "Create a custom pet" flow — each entry is a full pet object
+  // (id, name, gifUrl, kind, sayings), not just a bare id like ownedPets,
+  // since there's no static catalog entry for App/NoteEditor to look one
+  // up in.
+  customPets: [],
 };
 
 export async function getAppState() {
